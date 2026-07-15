@@ -30,7 +30,6 @@ extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
 fn xsys(n: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) i64 {
     return _zag_raw_syscall(n, a, b, c, d, e, f);
 }
-
 // SysV shared memory (Linux IPC_PRIVATE=0, IPC_CREAT=512, IPC_RMID=0, mode 0666=438)
 fn x_shmget(size: i64) i64 {
     return xsys(29, 0, size, 512 + 438, 0, 0, 0);
@@ -1123,4 +1122,3 @@ fn x11_keycode_of(x: *X11, ks: i64) i32 {
     }
     return 0 - 1;
 }
-

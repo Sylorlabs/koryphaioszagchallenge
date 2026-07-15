@@ -1147,4 +1147,3 @@ fn font_row(ch: i32, row: i32) i32 {
     }
     return 0;
 }
-
