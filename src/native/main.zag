@@ -1,0 +1,101 @@
+// Koryphaios native desktop entry point.
+// No HTTP server, browser renderer, WebView, REST client, or WebSocket UI.
+
+@import("fb.zag")
+@import("x11.zag")
+@import("contract.zag")
+
+fn arg_has(want: []u8) bool {
+    let i: i32 = 1;
+    while (i < _zag_argc()) {
+        if (_zag_strcmp(_zag_arg(i), want) == 1) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn arg_after(want: []u8, fallback: []u8) []u8 {
+    let i: i32 = 1;
+    while (i + 1 < _zag_argc()) {
+        if (_zag_strcmp(_zag_arg(i), want) == 1) { return _zag_arg(i + 1); }
+        i = i + 1;
+    }
+    return fallback;
+}
+
+fn draw_button(f: *FB, x: i32, y: i32, w: i32, label: []u8, active: bool) void {
+    let bg: i64 = rgb(38, 34, 32);
+    if (active) { bg = rgb(82, 66, 38); }
+    fill_rect(f, x, y, w, 28, bg);
+    round_rect_outline(f, x, y, w, 28, 5, rgb(110, 92, 57));
+    draw_text(f, x + 10, y + 10, label, rgb(235, 226, 208));
+}
+
+fn render(f: *FB, w: i32, h: i32, selected: i32, recovery: bool) void {
+    fill_rect(f, 0, 0, w, h, rgb(13, 11, 10));
+    fill_rect(f, 0, 0, w, 40, rgb(28, 25, 23));
+    draw_text_scaled(f, 18, 14, "KORYPHAIOS", rgb(229, 194, 108), 2);
+    draw_text(f, w - 190, 16, "Native Zag desktop", rgb(183, 172, 155));
+
+    fill_rect(f, 0, 40, 248, h - 40, rgb(20, 18, 16));
+    draw_text(f, 18, 62, "SESSIONS", rgb(183, 172, 155));
+    draw_button(f, 14, 80, 220, "+ New session", selected == 0);
+    draw_button(f, 14, 116, 220, "Koryphaios rewrite", selected == 1);
+    draw_button(f, 14, 152, 220, "Provider setup", selected == 2);
+    draw_button(f, 14, 188, 220, "Notes and memory", selected == 3);
+    draw_text(f, 18, h - 36, "Ctrl+K commands  Ctrl+, settings", rgb(139, 129, 116));
+
+    fill_rect(f, 248, 40, w - 248, h - 40, rgb(18, 16, 15));
+    if (recovery) {
+        draw_text_scaled(f, 290, 94, "Startup recovery", rgb(235, 185, 103), 2);
+        draw_text(f, 290, 138, "Core readiness failed. No partial workspace is shown.", rgb(236, 223, 207));
+        draw_button(f, 290, 170, 160, "Retry startup", true);
+        draw_text(f, 290, 218, "Use --diagnostics for the local readiness report.", rgb(183, 172, 155));
+    } else {
+        draw_text_scaled(f, 290, 92, "Koryphaios", rgb(239, 230, 215), 2);
+        draw_text(f, 290, 132, "Native X11 shell is active. The browser UI is not started.", rgb(204, 192, 175));
+        draw_text(f, 290, 158, "Commands and events cross the typed in-process boundary.", rgb(204, 192, 175));
+        draw_text(f, 290, 210, "Provider and migration services are tracked in the parity matrix.", rgb(183, 172, 155));
+        fill_rect(f, 290, h - 104, w - 330, 44, rgb(35, 31, 29));
+        round_rect_outline(f, 290, h - 104, w - 330, 44, 6, rgb(110, 92, 57));
+        draw_text(f, 304, h - 84, "Message Koryphaios  (native composer foundation)", rgb(139, 129, 116));
+    }
+}
+
+fn run_headless() i32 {
+    let f: FB = fb_new(1024, 640);
+    render(&f, 1024, 640, 1, false);
+    if (arg_has("--capture")) { fb_write_bmp(&f, arg_after("--capture", "koryphaios-native.bmp")); }
+    _zag_println("native-headless: PASS contract=AppCommand/AppEvent renderer=framebuffer");
+    return 0;
+}
+
+fn run_x11() i32 {
+    let x: *X11 = x11_connect(1280, 720, "Koryphaios");
+    if (!x.*.ok) {
+        _zag_eprintln("native-x11: no X server; use --headless-test");
+        return 1;
+    }
+    let f: FB = fb_new(x.*.win_w, x.*.win_h);
+    let selected: i32 = 1;
+    let recovery: bool = arg_has("--safe-mode");
+    while (!x.*.should_close) {
+        x11_pump(x);
+        if (f.w != x.*.win_w || f.h != x.*.win_h) { fb_resize(&f, x.*.win_w, x.*.win_h); }
+        render(&f, f.w, f.h, selected, recovery);
+        x11_put_frame(x, f.px.data, f.w, f.h);
+        x11_sleep_ms(16);
+    }
+    x11_close(x);
+    return 0;
+}
+
+fn main() i32 {
+    if (arg_has("--version")) { _zag_println("koryphaios-zag 0.1.0-native"); return 0; }
+    if (arg_has("--diagnostics")) {
+        _zag_println("diagnostics: ui=x11 core=in-process http=disabled tls-pki=not-ready");
+        return 0;
+    }
+    if (arg_has("--headless-test") || arg_has("--capture") || arg_has("--x11-selftest")) { return run_headless(); }
+    return run_x11();
+}

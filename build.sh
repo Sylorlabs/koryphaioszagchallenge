@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Koryphaios-Zag: one static binary, no external toolchain.
+# Build the native X11 Koryphaios desktop application.
 set -euo pipefail
 cd "$(dirname "$0")"
 ZNC="${ZNC:-/home/micah/Desktop/Sylorlabs/zag/zag-poc/znc}"
@@ -13,7 +13,7 @@ echo "── crypto test vectors (RFC 4231/5869/8439/7748)"
 echo "── zrt test suite"
 "$ZNC" src/zrt/zrt_test.zag -o build/zrt_test --run 2>&1 | grep -iE "ALL PASS|checks passed" | tail -1
 
-echo "── koryphaios"
-"$ZNC" src/main.zag -o build/koryphaios
+echo "── native koryphaios"
+"$ZNC" src/native/main.zag -o build/koryphaios
 ls -la build/koryphaios
 echo "run: ./build/koryphaios   (KORYPHAIOS_PORT=3001 by default)"

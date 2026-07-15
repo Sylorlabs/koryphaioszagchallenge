@@ -1,0 +1,642 @@
+// fb.zag — software framebuffer for Zag Photonics Architect.
+//
+// Pixels are i64 elements holding 0x00RRGGBB in the low 4 bytes; the buffer
+// is written verbatim to /dev/shm and the display shim compacts 8 -> 4 bytes.
+// A parallel i64 z-buffer (fixed-point depth, larger = nearer test inverted:
+// we store depth*1024, smaller wins) backs the 3D viewport region.
+
+@import("../../zagstd/list.zag") as list
+@import("../../zagstd/rt.zag")
+@import("fontdata.zag")
+
+struct FB {
+    px: list.ArrayList[i64],
+    zb: list.ArrayList[i64],
+    w: i32,
+    h: i32,
+    // active clip rect (inclusive min, exclusive max)
+    cx0: i32,
+    cy0: i32,
+    cx1: i32,
+    cy1: i32,
+    // text atlas (Section 3.12): 96 printable glyphs x 9 row bitmasks,
+    // pre-rasterized once so glyph runs blit without per-char dispatch
+    glyphs: list.ArrayList[i64],
+    // per-cell anti-aliasing coverage (96 glyphs x 9 rows x 5 cols, 0..256),
+    // computed once from the bitmaps via scale2x so the text hot path only
+    // reads a value instead of recomputing edge coverage per pixel per frame.
+    cov: list.ArrayList[i64],
+    // anti-aliased text: soften glyph edges so the UI does not read as raw
+    // pixels. Off for deterministic golden probes and HiDPI scaled text.
+    aa_text: bool,
+}
+
+// scale2x coverage 0..256 for source pixel (col,row) given its row bitmasks.
+fn atlas_cov_at(up: i32, mid: i32, dn: i32, col: i32) i32 {
+    let p: i32 = (mid >> (4 - col)) & 1;
+    let a: i32 = 0;
+    if (col >= 0 && col <= 4) { a = (up >> (4 - col)) & 1; }
+    let b: i32 = 0;
+    if (col + 1 <= 4) { b = (mid >> (4 - (col + 1))) & 1; }
+    let cc: i32 = 0;
+    if (col - 1 >= 0) { cc = (mid >> (4 - (col - 1))) & 1; }
+    let d: i32 = 0;
+    if (col >= 0 && col <= 4) { d = (dn >> (4 - col)) & 1; }
+    let e0: i32 = p;
+    let e1: i32 = p;
+    let e2: i32 = p;
+    let e3: i32 = p;
+    if (cc == a && cc != d && a != b) { e0 = a; }
+    if (a == b && a != cc && b != d) { e1 = b; }
+    if (d == cc && d != b && cc != a) { e2 = cc; }
+    if (b == d && b != a && d != cc) { e3 = d; }
+    return (e0 + e1 + e2 + e3) * 64;
+}
+
+fn fb_build_atlas(f: *FB) void {
+    f.*.glyphs.len = 0;
+    let ch: i32 = 32;
+    while (ch < 128) {
+        let row: i32 = 0;
+        while (row < 9) {
+            list.push[i64](&f.*.glyphs, font_row(ch, row) as i64);
+            row = row + 1;
+        }
+        ch = ch + 1;
+    }
+    // precompute per-cell coverage from the just-built bitmap rows
+    f.*.cov.len = 0;
+    let c2: i32 = 32;
+    while (c2 < 128) {
+        let r2: i32 = 0;
+        while (r2 < 9) {
+            let up: i32 = 0;
+            if (r2 > 0) { up = f.*.glyphs.data[(c2 - 32) * 9 + r2 - 1] as i32; }
+            let mid: i32 = f.*.glyphs.data[(c2 - 32) * 9 + r2] as i32;
+            let dn: i32 = 0;
+            if (r2 < 8) { dn = f.*.glyphs.data[(c2 - 32) * 9 + r2 + 1] as i32; }
+            let cl: i32 = 0;
+            while (cl < 5) {
+                list.push[i64](&f.*.cov, atlas_cov_at(up, mid, dn, cl) as i64);
+                cl = cl + 1;
+            }
+            r2 = r2 + 1;
+        }
+        c2 = c2 + 1;
+    }
+}
+
+fn rgb(r: i32, g: i32, b: i32) i64 {
+    return ((r * 65536) + (g * 256) + b) as i64;
+}
+
+fn col_r(c: i64) i32 { return ((c as i32) >> 16) & 255; }
+fn col_g(c: i64) i32 { return ((c as i32) >> 8) & 255; }
+fn col_b(c: i64) i32 { return (c as i32) & 255; }
+
+// Linear blend: a over b with alpha 0..256.
+fn mix(a: i64, b: i64, alpha: i32) i64 {
+    let ia: i32 = 256 - alpha;
+    let r: i32 = (col_r(a) * alpha + col_r(b) * ia) >> 8;
+    let g: i32 = (col_g(a) * alpha + col_g(b) * ia) >> 8;
+    let bl: i32 = (col_b(a) * alpha + col_b(b) * ia) >> 8;
+    return rgb(r, g, bl);
+}
+
+// Scale color brightness by q/256.
+fn shade(c: i64, q: i32) i64 {
+    let r: i32 = (col_r(c) * q) >> 8;
+    let g: i32 = (col_g(c) * q) >> 8;
+    let b: i32 = (col_b(c) * q) >> 8;
+    if (r > 255) { r = 255; }
+    if (g > 255) { g = 255; }
+    if (b > 255) { b = 255; }
+    return rgb(r, g, b);
+}
+
+fn fb_new(w: i32, h: i32) FB {
+    let f: FB = FB{
+        .px = list.make[i64](w * h),
+        .zb = list.make[i64](w * h),
+        .w = w,
+        .h = h,
+        .cx0 = 0,
+        .cy0 = 0,
+        .cx1 = w,
+        .cy1 = h,
+        .glyphs = list.make[i64](96 * 9),
+        .cov = list.make[i64](96 * 45),
+        .aa_text = true,
+    };
+    f.px.len = w * h;
+    f.zb.len = w * h;
+    fb_build_atlas(&f);
+    return f;
+}
+
+fn fb_resize(f: *FB, w: i32, h: i32) void {
+    if (f.*.w == w && f.*.h == h) { return; }
+    list.free[i64](&f.*.px);
+    list.free[i64](&f.*.zb);
+    f.*.px = list.make[i64](w * h);
+    f.*.zb = list.make[i64](w * h);
+    f.*.px.len = w * h;
+    f.*.zb.len = w * h;
+    f.*.w = w;
+    f.*.h = h;
+    fb_clip_reset(f);
+}
+
+// Integer nearest-neighbor upscale of `src` into `dst` by `scale` (for HiDPI:
+// render the whole UI at a logical resolution, then upscale to physical pixels).
+// dst must be at least src.w*scale by src.h*scale.
+fn fb_upscale(dst: *FB, src: *FB, scale: i32) void {
+    let dw: i32 = src.*.w * scale;
+    let dh: i32 = src.*.h * scale;
+    if (dst.*.w < dw || dst.*.h < dh) { return; }
+    let y: i32 = 0;
+    while (y < dh) {
+        let sy: i32 = y / scale;
+        let srow: i32 = sy * src.*.w;
+        let drow: i32 = y * dst.*.w;
+        let x: i32 = 0;
+        while (x < dw) {
+            dst.*.px.data[drow + x] = src.*.px.data[srow + (x / scale)];
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fn fb_clip(f: *FB, x0: i32, y0: i32, x1: i32, y1: i32) void {
+    f.*.cx0 = x0;
+    f.*.cy0 = y0;
+    f.*.cx1 = x1;
+    f.*.cy1 = y1;
+    if (f.*.cx0 < 0) { f.*.cx0 = 0; }
+    if (f.*.cy0 < 0) { f.*.cy0 = 0; }
+    if (f.*.cx1 > f.*.w) { f.*.cx1 = f.*.w; }
+    if (f.*.cy1 > f.*.h) { f.*.cy1 = f.*.h; }
+}
+
+fn fb_clip_reset(f: *FB) void {
+    fb_clip(f, 0, 0, f.*.w, f.*.h);
+}
+
+fn px_set(f: *FB, x: i32, y: i32, c: i64) void {
+    if (x < f.*.cx0 || x >= f.*.cx1 || y < f.*.cy0 || y >= f.*.cy1) { return; }
+    f.*.px.data[y * f.*.w + x] = c;
+}
+
+fn px_blend(f: *FB, x: i32, y: i32, c: i64, alpha: i32) void {
+    if (x < f.*.cx0 || x >= f.*.cx1 || y < f.*.cy0 || y >= f.*.cy1) { return; }
+    let idx: i32 = y * f.*.w + x;
+    f.*.px.data[idx] = mix(c, f.*.px.data[idx], alpha);
+}
+
+fn fill_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64) void {
+    let x0: i32 = x;
+    let y0: i32 = y;
+    let x1: i32 = x + w;
+    let y1: i32 = y + h;
+    if (x0 < f.*.cx0) { x0 = f.*.cx0; }
+    if (y0 < f.*.cy0) { y0 = f.*.cy0; }
+    if (x1 > f.*.cx1) { x1 = f.*.cx1; }
+    if (y1 > f.*.cy1) { y1 = f.*.cy1; }
+    let yy: i32 = y0;
+    while (yy < y1) {
+        let base: i32 = yy * f.*.w;
+        let xx: i32 = x0;
+        while (xx + 4 <= x1) {
+            f.*.px.data[base + xx] = c;
+            f.*.px.data[base + xx + 1] = c;
+            f.*.px.data[base + xx + 2] = c;
+            f.*.px.data[base + xx + 3] = c;
+            xx = xx + 4;
+        }
+        while (xx < x1) {
+            f.*.px.data[base + xx] = c;
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+}
+
+fn blend_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64, alpha: i32) void {
+    let x0: i32 = x;
+    let y0: i32 = y;
+    let x1: i32 = x + w;
+    let y1: i32 = y + h;
+    if (x0 < f.*.cx0) { x0 = f.*.cx0; }
+    if (y0 < f.*.cy0) { y0 = f.*.cy0; }
+    if (x1 > f.*.cx1) { x1 = f.*.cx1; }
+    if (y1 > f.*.cy1) { y1 = f.*.cy1; }
+    let yy: i32 = y0;
+    while (yy < y1) {
+        let base: i32 = yy * f.*.w;
+        let xx: i32 = x0;
+        while (xx < x1) {
+            f.*.px.data[base + xx] = mix(c, f.*.px.data[base + xx], alpha);
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+}
+
+fn rect_outline(f: *FB, x: i32, y: i32, w: i32, h: i32, c: i64) void {
+    fill_rect(f, x, y, w, 1, c);
+    fill_rect(f, x, y + h - 1, w, 1, c);
+    fill_rect(f, x, y, 1, h, c);
+    fill_rect(f, x + w - 1, y, 1, h, c);
+}
+
+// ── anti-aliased rounded rectangles (modern UI chrome) ───────────────────────
+// A rounded rect is straight-edge fills plus four anti-aliased quarter-disc
+// corners: coverage falls off across ~1px at the arc so corners read smooth
+// instead of stepped. These run inside cached panel surfaces, so the per-corner
+// distance math is paid only on redraw, not every frame.
+
+fn rr_clamp_radius(w: i32, h: i32, r: i32) i32 {
+    let m: i32 = w;
+    if (h < m) { m = h; }
+    let rc: i32 = r;
+    if (rc > m / 2) { rc = m / 2; }
+    if (rc < 0) { rc = 0; }
+    return rc;
+}
+
+// Fill one r-sized corner box whose arc center is (cx,cy), covering the disc.
+fn rr_corner(f: *FB, bx: i32, by: i32, r: i32, cx: f64, cy: f64, c: i64) void {
+    let rf: f64 = r as f64;
+    let py: i32 = by;
+    while (py < by + r) {
+        let px: i32 = bx;
+        while (px < bx + r) {
+            let dx: f64 = (px as f64) + 0.5 - cx;
+            let dy: f64 = (py as f64) + 0.5 - cy;
+            let d: f64 = sqrt(dx * dx + dy * dy);
+            let cov: f64 = rf + 0.5 - d;
+            if (cov >= 1.0) { px_set(f, px, py, c); }
+            else if (cov > 0.0) { px_blend(f, px, py, c, (cov * 256.0) as i32); }
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+}
+
+fn fill_round_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, r: i32, c: i64) void {
+    let rc: i32 = rr_clamp_radius(w, h, r);
+    if (rc <= 0) { fill_rect(f, x, y, w, h, c); return; }
+    fill_rect(f, x + rc, y, w - 2 * rc, h, c);           // center band (full height)
+    fill_rect(f, x, y + rc, rc, h - 2 * rc, c);          // left band
+    fill_rect(f, x + w - rc, y + rc, rc, h - 2 * rc, c); // right band
+    let rf: f64 = rc as f64;
+    rr_corner(f, x, y, rc, (x as f64) + rf, (y as f64) + rf, c);
+    rr_corner(f, x + w - rc, y, rc, (x + w - rc) as f64, (y as f64) + rf, c);
+    rr_corner(f, x, y + h - rc, rc, (x as f64) + rf, (y + h - rc) as f64, c);
+    rr_corner(f, x + w - rc, y + h - rc, rc, (x + w - rc) as f64, (y + h - rc) as f64, c);
+}
+
+// Translucent rounded fill (arc alpha scales with the base alpha).
+fn rr_corner_blend(f: *FB, bx: i32, by: i32, r: i32, cx: f64, cy: f64, c: i64, alpha: i32) void {
+    let rf: f64 = r as f64;
+    let py: i32 = by;
+    while (py < by + r) {
+        let px: i32 = bx;
+        while (px < bx + r) {
+            let dx: f64 = (px as f64) + 0.5 - cx;
+            let dy: f64 = (py as f64) + 0.5 - cy;
+            let d: f64 = sqrt(dx * dx + dy * dy);
+            let cov: f64 = rf + 0.5 - d;
+            if (cov > 0.0) {
+                let a: i32 = alpha;
+                if (cov < 1.0) { a = (cov * (alpha as f64)) as i32; }
+                px_blend(f, px, py, c, a);
+            }
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+}
+
+fn blend_round_rect(f: *FB, x: i32, y: i32, w: i32, h: i32, r: i32, c: i64, alpha: i32) void {
+    let rc: i32 = rr_clamp_radius(w, h, r);
+    if (rc <= 0) { blend_rect(f, x, y, w, h, c, alpha); return; }
+    blend_rect(f, x + rc, y, w - 2 * rc, h, c, alpha);
+    blend_rect(f, x, y + rc, rc, h - 2 * rc, c, alpha);
+    blend_rect(f, x + w - rc, y + rc, rc, h - 2 * rc, c, alpha);
+    let rf: f64 = rc as f64;
+    rr_corner_blend(f, x, y, rc, (x as f64) + rf, (y as f64) + rf, c, alpha);
+    rr_corner_blend(f, x + w - rc, y, rc, (x + w - rc) as f64, (y as f64) + rf, c, alpha);
+    rr_corner_blend(f, x, y + h - rc, rc, (x as f64) + rf, (y + h - rc) as f64, c, alpha);
+    rr_corner_blend(f, x + w - rc, y + h - rc, rc, (x + w - rc) as f64, (y + h - rc) as f64, c, alpha);
+}
+
+// 1px anti-aliased rounded border: straight edges plus arc rings.
+fn rr_ring(f: *FB, bx: i32, by: i32, r: i32, cx: f64, cy: f64, c: i64) void {
+    let rf: f64 = r as f64;
+    let py: i32 = by;
+    while (py < by + r) {
+        let px: i32 = bx;
+        while (px < bx + r) {
+            let dx: f64 = (px as f64) + 0.5 - cx;
+            let dy: f64 = (py as f64) + 0.5 - cy;
+            let d: f64 = sqrt(dx * dx + dy * dy);
+            let e: f64 = d - (rf - 0.5);
+            if (e < 0.0) { e = 0.0 - e; }
+            let cov: f64 = 1.0 - e;
+            if (cov > 0.0) { px_blend(f, px, py, c, (cov * 256.0) as i32); }
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+}
+
+fn round_rect_outline(f: *FB, x: i32, y: i32, w: i32, h: i32, r: i32, c: i64) void {
+    let rc: i32 = rr_clamp_radius(w, h, r);
+    if (rc <= 0) { rect_outline(f, x, y, w, h, c); return; }
+    fill_rect(f, x + rc, y, w - 2 * rc, 1, c);          // top
+    fill_rect(f, x + rc, y + h - 1, w - 2 * rc, 1, c);  // bottom
+    fill_rect(f, x, y + rc, 1, h - 2 * rc, c);          // left
+    fill_rect(f, x + w - 1, y + rc, 1, h - 2 * rc, c);  // right
+    let rf: f64 = rc as f64;
+    rr_ring(f, x, y, rc, (x as f64) + rf, (y as f64) + rf, c);
+    rr_ring(f, x + w - rc, y, rc, (x + w - rc) as f64, (y as f64) + rf, c);
+    rr_ring(f, x, y + h - rc, rc, (x as f64) + rf, (y + h - rc) as f64, c);
+    rr_ring(f, x + w - rc, y + h - rc, rc, (x + w - rc) as f64, (y + h - rc) as f64, c);
+}
+
+// Soft drop shadow for floating surfaces (menus, popups, cards): a few
+// expanding translucent rounded rects behind the element give a cheap blur.
+fn draw_shadow(f: *FB, x: i32, y: i32, w: i32, h: i32, r: i32) void {
+    blend_round_rect(f, x - 1, y + 1, w + 2, h + 3, r + 2, rgb(0, 0, 0), 40);
+    blend_round_rect(f, x - 2, y + 2, w + 4, h + 5, r + 3, rgb(0, 0, 0), 26);
+    blend_round_rect(f, x - 4, y + 4, w + 8, h + 8, r + 4, rgb(0, 0, 0), 14);
+}
+
+fn hline(f: *FB, x: i32, y: i32, w: i32, c: i64) void {
+    fill_rect(f, x, y, w, 1, c);
+}
+
+fn vline(f: *FB, x: i32, y: i32, h: i32, c: i64) void {
+    fill_rect(f, x, y, 1, h, c);
+}
+
+// Bresenham 2D line.
+fn line2d(f: *FB, x0_: i32, y0_: i32, x1_: i32, y1_: i32, c: i64) void {
+    let x0: i32 = x0_;
+    let y0: i32 = y0_;
+    let x1: i32 = x1_;
+    let y1: i32 = y1_;
+    let dx: i32 = x1 - x0;
+    if (dx < 0) { dx = 0 - dx; }
+    let dy: i32 = y1 - y0;
+    if (dy < 0) { dy = 0 - dy; }
+    dy = 0 - dy;
+    let sx: i32 = 1;
+    if (x0 > x1) { sx = 0 - 1; }
+    let sy: i32 = 1;
+    if (y0 > y1) { sy = 0 - 1; }
+    let err: i32 = dx + dy;
+    let running: bool = true;
+    while (running) {
+        px_set(f, x0, y0, c);
+        if (x0 == x1 && y0 == y1) {
+            running = false;
+        } else {
+            let e2: i32 = err * 2;
+            if (e2 >= dy) {
+                err = err + dy;
+                x0 = x0 + sx;
+            }
+            if (e2 <= dx && running) {
+                err = err + dx;
+                y0 = y0 + sy;
+            }
+        }
+    }
+}
+
+// ── text ─────────────────────────────────────────────────────────────────────
+
+// One glyph row bitmask (atlas-backed; falls back to the generator switch).
+fn glyph_row_bits(f: *FB, ch: i32, row: i32) i32 {
+    if (row < 0 || row >= 9) { return 0; }
+    if (ch >= 32 && ch < 128 && f.*.glyphs.len >= 96 * 9) {
+        return f.*.glyphs.data[(ch - 32) * 9 + row] as i32;
+    }
+    return font_row(ch, row);
+}
+
+fn glyph_on(bits: i32, col: i32) i32 {
+    if (col < 0 || col > 4) { return 0; }
+    return (bits >> (4 - col)) & 1;
+}
+
+// Anti-aliased glyph blit: reads the precomputed scale2x coverage atlas, so
+// solid interiors are opaque set-pixels and only diagonal edges pay a blend.
+// Softens the stair-steps without going blurry (Section 3.11 look).
+fn draw_char_aa(f: *FB, x: i32, y: i32, ch: i32, c: i64) void {
+    let base: i32 = (ch - 32) * 45;
+    let row: i32 = 0;
+    while (row < 9) {
+        let rbase: i32 = base + row * 5;
+        let col: i32 = 0;
+        while (col < 5) {
+            let cov: i32 = f.*.cov.data[rbase + col] as i32;
+            if (cov >= 256) { px_set(f, x + col, y + row, c); }
+            else if (cov > 0) { px_blend(f, x + col, y + row, c, cov); }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+fn draw_char(f: *FB, x: i32, y: i32, ch: i32, c: i64, scale: i32) void {
+    if (scale == 1 && f.*.aa_text && ch >= 32 && ch < 128 && f.*.cov.len >= 96 * 45) {
+        draw_char_aa(f, x, y, ch, c);
+        return;
+    }
+    // crisp path (also used for HiDPI scaled text and deterministic probes)
+    let base: i32 = (ch - 32) * 9;
+    let use_atlas: bool = ch >= 32 && ch < 128 && f.*.glyphs.len >= 96 * 9;
+    let row: i32 = 0;
+    while (row < 9) {
+        let bits: i32 = 0;
+        if (use_atlas) { bits = f.*.glyphs.data[base + row] as i32; }
+        else { bits = font_row(ch, row); }
+        let col: i32 = 0;
+        while (col < 5) {
+            if (((bits >> (4 - col)) & 1) == 1) {
+                if (scale == 1) {
+                    px_set(f, x + col, y + row, c);
+                } else {
+                    fill_rect(f, x + col * scale, y + row * scale, scale, scale, c);
+                }
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+fn draw_text(f: *FB, x: i32, y: i32, s: []u8, c: i64) void {
+    let i: i32 = 0;
+    while (i < s.len) {
+        draw_char(f, x + i * 6, y, s[i] as i32, c, 1);
+        i = i + 1;
+    }
+}
+
+fn draw_text_scaled(f: *FB, x: i32, y: i32, s: []u8, c: i64, scale: i32) void {
+    let i: i32 = 0;
+    while (i < s.len) {
+        draw_char(f, x + i * 6 * scale, y, s[i] as i32, c, scale);
+        i = i + 1;
+    }
+}
+
+fn text_w(s: []u8) i32 {
+    return s.len * 6;
+}
+
+// Draw at most `maxw` pixels of text; overflow ends in a '.' so truncation is
+// visible and text never touches a border it shouldn't (Section 3.2).
+fn draw_text_max(f: *FB, x: i32, y: i32, s: []u8, c: i64, maxw: i32) void {
+    let maxc: i32 = maxw / 6;
+    if (maxc <= 0) { return; }
+    if (s.len <= maxc) {
+        draw_text(f, x, y, s, c);
+        return;
+    }
+    let i: i32 = 0;
+    while (i < maxc - 1) {
+        draw_char(f, x + i * 6, y, s[i] as i32, c, 1);
+        i = i + 1;
+    }
+    draw_char(f, x + i * 6, y, '.' as i32, c, 1);
+}
+
+// draw integer as text; returns width drawn
+fn draw_int(f: *FB, x: i32, y: i32, v: i64, c: i64) i32 {
+    let s: []u8 = _zag_i64_to_str(v);
+    draw_text(f, x, y, s, c);
+    return text_w(s);
+}
+
+// ── output ───────────────────────────────────────────────────────────────────
+
+// Raw dump for the display shim: w*h i64 (low 4 bytes = 0RGB), tight.
+fn fb_write_shm(f: *FB, path: []u8) void {
+    let raw: *i8 = f.*.px.data as *i8;
+    let bytes: []u8 = raw[0..f.*.w * f.*.h * 8];
+    let rc: i32 = _zag_write_file(path, bytes);
+    if (rc != 0) { _zag_eprintln("fb: /dev/shm write failed"); }
+}
+
+// Binary PPM dump: deliberately dependency-free and independent of X11.
+fn fb_write_ppm(f: *FB, path: []u8) void {
+    let header: []u8 = _zag_str_concat(_zag_str_concat(_zag_str_concat("P6\n", _zag_i64_to_str(f.*.w as i64)), " "), _zag_str_concat(_zag_i64_to_str(f.*.h as i64), "\n255\n"));
+    let out: list.ArrayList[u8] = list.make[u8](header.len + f.*.w * f.*.h * 3);
+    let hi: i32 = 0;
+    while (hi < header.len) { push_u8(&out, header[hi]); hi = hi + 1; }
+    let i: i32 = 0;
+    while (i < f.*.w * f.*.h) {
+        let c: i64 = f.*.px.data[i];
+        push_u8(&out, col_r(c) as u8);
+        push_u8(&out, col_g(c) as u8);
+        push_u8(&out, col_b(c) as u8);
+        i = i + 1;
+    }
+    let rc: i32 = _zag_write_file(path, out.data[0..out.len]);
+    if (rc != 0) { _zag_eprintln("fb: ppm write failed"); }
+    list.free[u8](&out);
+}
+
+fn fb_test_pattern(f: *FB) void {
+    fb_clip_reset(f);
+    fill_rect(f, 0, 0, f.*.w, f.*.h, rgb(12, 12, 16));
+    let x: i32 = 0;
+    while (x < f.*.w) {
+        if (x % 32 == 0) { vline(f, x, 0, f.*.h, rgb(48, 48, 56)); }
+        x = x + 1;
+    }
+    let y: i32 = 0;
+    while (y < f.*.h) {
+        if (y % 32 == 0) { hline(f, 0, y, f.*.w, rgb(48, 48, 56)); }
+        y = y + 1;
+    }
+    fill_rect(f, 8, 8, 64, 64, rgb(255, 0, 0));
+    fill_rect(f, f.*.w - 72, 8, 64, 64, rgb(0, 255, 0));
+    fill_rect(f, 8, f.*.h - 72, 64, 64, rgb(0, 0, 255));
+    fill_rect(f, f.*.w - 72, f.*.h - 72, 64, 64, rgb(255, 255, 255));
+    hline(f, 0, f.*.h / 2, f.*.w, rgb(255, 255, 0));
+    vline(f, f.*.w / 2, 0, f.*.h, rgb(255, 255, 0));
+    rect_outline(f, 0, 0, f.*.w, f.*.h, rgb(255, 0, 255));
+}
+
+// BMP screenshot (24-bit, bottom-up) for smoke verification.
+fn fb_write_bmp(f: *FB, path: []u8) void {
+    let w: i32 = f.*.w;
+    let h: i32 = f.*.h;
+    let row_bytes: i32 = w * 3;
+    let pad: i32 = (4 - (row_bytes % 4)) % 4;
+    let data_size: i32 = (row_bytes + pad) * h;
+    let file_size: i32 = 54 + data_size;
+
+    let out: list.ArrayList[u8] = list.make[u8](file_size);
+    push_u8(&out, 66);  // 'B'
+    push_u8(&out, 77);  // 'M'
+    push_u32le(&out, file_size);
+    push_u32le(&out, 0);
+    push_u32le(&out, 54);
+    push_u32le(&out, 40);
+    push_u32le(&out, w);
+    push_u32le(&out, h);
+    push_u16le(&out, 1);
+    push_u16le(&out, 24);
+    push_u32le(&out, 0);
+    push_u32le(&out, data_size);
+    push_u32le(&out, 2835);
+    push_u32le(&out, 2835);
+    push_u32le(&out, 0);
+    push_u32le(&out, 0);
+
+    let y: i32 = h - 1;
+    while (y >= 0) {
+        let x: i32 = 0;
+        while (x < w) {
+            let c: i64 = f.*.px.data[y * w + x];
+            push_u8(&out, col_b(c) as u8);
+            push_u8(&out, col_g(c) as u8);
+            push_u8(&out, col_r(c) as u8);
+            x = x + 1;
+        }
+        let p: i32 = 0;
+        while (p < pad) {
+            push_u8(&out, 0);
+            p = p + 1;
+        }
+        y = y - 1;
+    }
+    let bytes: []u8 = out.data[0..out.len];
+    let rc: i32 = _zag_write_file(path, bytes);
+    if (rc != 0) { _zag_eprintln("fb: bmp write failed"); }
+    list.free[u8](&out);
+}
+
+fn push_u8(out: *list.ArrayList[u8], v: u8) void {
+    list.push[u8](out, v);
+}
+
+fn push_u16le(out: *list.ArrayList[u8], v: i32) void {
+    push_u8(out, (v & 255) as u8);
+    push_u8(out, ((v >> 8) & 255) as u8);
+}
+
+fn push_u32le(out: *list.ArrayList[u8], v: i32) void {
+    push_u8(out, (v & 255) as u8);
+    push_u8(out, ((v >> 8) & 255) as u8);
+    push_u8(out, ((v >> 16) & 255) as u8);
+    push_u8(out, ((v >> 24) & 255) as u8);
+}

@@ -1,0 +1,4 @@
+zag_commit=82042bdd70f62089f600be7ae1263e8ae86289c5
+znc_version=znc 2026.07.0-dev (edition 2026)
+znc_sha256=4f4a7eee5e11aeee5e24c37c7e80d81a8ec21d267259f9eb6002eec868a12dbd
+target=linux-x86_64-x11-xwayland

@@ -1,0 +1,1126 @@
+// x11.zag — a pure-Zag X11 client. No libc, no Xlib, no C anywhere:
+// this speaks the X11 wire protocol directly over the server's unix socket
+// using the _zag_raw_syscall intrinsic (socket/connect/read/write/poll/
+// nanosleep/close). It provides exactly what a single-window CAD app needs:
+// connection setup (with MIT-MAGIC-COOKIE-1 auth from ~/.Xauthority when the
+// server demands it), one InputOutput window, WM_DELETE_WINDOW handling,
+// keyboard mapping, pointer/key events, MIT-SHM shared-memory blits (with
+// banded ZPixmap PutImage fallback), and optimized 32-bit pixel copies.
+//
+// ── full-frame vs dirty-rect ─────────────────────────────────────────────────
+// x11_put_frame uploads the entire window every call. That is intentional for
+// the interactive CAD loop today:
+//   • the status bar shows live frame_ms (changes every frame)
+//   • the signal debugger animates when sim is playing
+//   • waveguide trit colors update every symbol step
+//   • panels (outliner, toolbar) repaint on hover/selection
+// MIT-SHM already makes full-frame cheap: one memcpy into the shared segment
+// plus a tiny XShmPutImage request (no pixel payload over the socket).
+// x11_put_frame_rect exists for future partial uploads (e.g. static viewport
+// tile-cache hits with frozen HUD). Until the UI tracks per-zone dirtiness,
+// main.zag uses full-frame blits (with an every-other-frame skip while
+// orbiting).
+
+@import("../../zagstd/list.zag") as list
+
+extern fn _zag_memcpy(dst: *i8, src: *i8, n: i32) void;
+
+// ── Linux syscalls ────────────────────────────────────────────────────────────
+
+fn xsys(n: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) i64 {
+    return _zag_raw_syscall(n, a, b, c, d, e, f);
+}
+
+// SysV shared memory (Linux IPC_PRIVATE=0, IPC_CREAT=512, IPC_RMID=0, mode 0666=438)
+fn x_shmget(size: i64) i64 {
+    return xsys(29, 0, size, 512 + 438, 0, 0, 0);
+}
+
+fn x_shmat(shmid: i64) i64 {
+    return xsys(30, shmid, 0, 0, 0, 0, 0);
+}
+
+// Map away from the Zag heap. Kernel-picked shmat addresses can overlap heap
+// allocations; never fall back to an unhinted attach on failure.
+fn x_shmat_safe(shmid: i64) i64 {
+    let hint: i64 = 1099511627776;   // 2^40
+    let addr: i64 = xsys(30, shmid, hint, 0, 0, 0, 0);
+    if (addr >= 0) { return addr; }
+    hint = 68719476736;             // 2^36
+    addr = xsys(30, shmid, hint, 0, 0, 0, 0);
+    if (addr >= 0) { return addr; }
+    return 0 - 1;
+}
+
+fn x_shmdt(addr: i64) i64 {
+    return xsys(67, addr, 0, 0, 0, 0, 0);
+}
+
+fn x_shmctl_rmid(shmid: i64) i64 {
+    return xsys(31, shmid, 0, 0, 0, 0, 0);
+}
+
+fn x_close_fd(fd: i64) void {
+    let _r: i64 = xsys(3, fd, 0, 0, 0, 0, 0);
+}
+
+fn x11_sleep_ms(ms: i64) void {
+    let ts: list.ArrayList[i64] = list.make[i64](2);
+    list.push[i64](&ts, ms / 1000);
+    list.push[i64](&ts, (ms % 1000) * 1000000);
+    let _r: i64 = xsys(35, ts.data as i64, 0, 0, 0, 0, 0);
+    list.free[i64](&ts);
+}
+
+// poll(fd, POLLIN, timeout_ms) -> >0 readable, 0 timeout, <0 error.
+// `pb` is a caller-owned 1-element scratch so the hot path never allocates.
+fn x_poll_in(pb: *list.ArrayList[i64], fd: i64, timeout_ms: i64) i64 {
+    // struct pollfd { i32 fd; i16 events; i16 revents; } packed into one word:
+    // events=POLLIN(1) sits at byte offset 4 -> value = fd + 1<<32
+    pb.*.len = 0;
+    list.push[i64](pb, fd + 4294967296);
+    return xsys(7, pb.*.data as i64, 1, timeout_ms, 0, 0, 0);
+}
+
+// write all n bytes (handles short writes)
+fn x_write_all(fd: i64, ptr: i64, n: i64) bool {
+    let off: i64 = 0;
+    while (off < n) {
+        let w: i64 = xsys(1, fd, ptr + off, n - off, 0, 0, 0);
+        if (w <= 0) { return false; }
+        off = off + w;
+    }
+    return true;
+}
+
+// read exactly n bytes (blocking); false on EOF/error
+fn x_read_n(fd: i64, ptr: i64, n: i64) bool {
+    let off: i64 = 0;
+    while (off < n) {
+        let r: i64 = xsys(0, fd, ptr + off, n - off, 0, 0, 0);
+        if (r <= 0) { return false; }
+        off = off + r;
+    }
+    return true;
+}
+
+// ── little-endian buffer builders / readers ──────────────────────────────────
+
+fn xw8(b: *list.ArrayList[u8], v: i32) void {
+    list.push[u8](b, (v & 255) as u8);
+}
+
+fn xw16(b: *list.ArrayList[u8], v: i32) void {
+    xw8(b, v & 255);
+    xw8(b, (v >> 8) & 255);
+}
+
+fn xw32(b: *list.ArrayList[u8], v: i64) void {
+    let x: i64 = v;
+    let i: i32 = 0;
+    while (i < 4) {
+        list.push[u8](b, (x % 256) as u8);
+        x = x / 256;
+        i = i + 1;
+    }
+}
+
+fn xw_pad4(b: *list.ArrayList[u8]) void {
+    while (b.*.len % 4 != 0) { xw8(b, 0); }
+}
+
+fn xw_bytes(b: *list.ArrayList[u8], s: []u8) void {
+    let i: i32 = 0;
+    while (i < s.len) {
+        list.push[u8](b, s[i]);
+        i = i + 1;
+    }
+}
+
+fn rd8(b: *list.ArrayList[u8], off: i32) i32 {
+    return b.*.data[off] as i32;
+}
+
+fn rd16(b: *list.ArrayList[u8], off: i32) i32 {
+    return rd8(b, off) + rd8(b, off + 1) * 256;
+}
+
+fn rd32(b: *list.ArrayList[u8], off: i32) i64 {
+    let v: i64 = 0;
+    let i: i32 = 3;
+    while (i >= 0) {
+        v = v * 256 + (rd8(b, off + i) as i64);
+        i = i - 1;
+    }
+    return v;
+}
+
+// big-endian u16 (Xauthority lengths)
+fn rd16be(b: *list.ArrayList[u8], off: i32) i32 {
+    return rd8(b, off) * 256 + rd8(b, off + 1);
+}
+
+// ── client state ──────────────────────────────────────────────────────────────
+
+struct X11 {
+    fd: i64,
+    ok: bool,
+    // resource ids
+    rid_base: i64,
+    rid_incr: i64,
+    rid_next: i64,
+    // server facts
+    root: i64,
+    root_visual: i64,
+    root_depth: i32,
+    pixmap_bpp: i32,
+    scanline_pad: i32,
+    max_req_bytes: i64,
+    // our objects
+    wid: i64,
+    gcid: i64,
+    wm_protocols: i64,
+    wm_delete: i64,
+    // keyboard map
+    min_kc: i32,
+    ksyms_per: i32,
+    keymap: list.ArrayList[i64],
+    // live input state for the app
+    mx: i32,
+    my: i32,
+    btn: i32,      // bit0 L, bit1 M, bit2 R
+    mods: i32,     // bit0 shift, bit1 ctrl, bit2 alt
+    wheel: i32,    // accumulated this frame
+    keys: list.ArrayList[i32],
+    win_w: i32,
+    win_h: i32,
+    should_close: bool,
+    focused: bool,
+    // Synthetic-event evidence for the live protocol selftest. Real user input
+    // may interleave with SendEvent, so assertions must not depend on last-event wins.
+    synth_seen: i32,
+    synth_motion_mods: i32,
+    synth_resize_w: i32,
+    synth_resize_h: i32,
+    synth_focus: bool,
+    // MIT-SHM shared framebuffer (fast path)
+    shm_ok: bool,
+    shm_attached: bool,
+    shm_id: i64,
+    shm_addr: i64,
+    shm_w: i32,
+    shm_h: i32,
+    shm_opcode: i32,
+    // reusable buffers
+    req: list.ArrayList[u8],
+    band: list.ArrayList[u8],
+    evt: list.ArrayList[u8],
+    pollb: list.ArrayList[i64],
+    // a resize or expose since the last present means the next upload must be
+    // the whole frame (dirty-region present cannot rely on stale window pixels)
+    needs_full: bool,
+}
+
+fn x_rid(x: *X11) i64 {
+    let id: i64 = x.*.rid_base + x.*.rid_next * x.*.rid_incr;
+    x.*.rid_next = x.*.rid_next + 1;
+    return id;
+}
+
+fn x_send(x: *X11) bool {
+    let okw: bool = x_write_all(x.*.fd, x.*.req.data as i64, x.*.req.len as i64);
+    x.*.req.len = 0;
+    return okw;
+}
+
+// ── DISPLAY + Xauthority ──────────────────────────────────────────────────────
+
+fn x_display_num() i32 {
+    let d: []u8 = _zag_getenv("DISPLAY");
+    if (d.len < 2) { return 0; }
+    // ":N" or ":N.S" or "host:N"
+    let colon: i32 = 0 - 1;
+    let i: i32 = 0;
+    while (i < d.len) {
+        if ((d[i] as i32) == ':') { colon = i; }
+        i = i + 1;
+    }
+    if (colon < 0) { return 0; }
+    let n: i32 = 0;
+    let j: i32 = colon + 1;
+    while (j < d.len && (d[j] as i32) >= '0' && (d[j] as i32) <= '9') {
+        n = n * 10 + ((d[j] as i32) - '0');
+        j = j + 1;
+    }
+    return n;
+}
+
+// Find the MIT-MAGIC-COOKIE-1 for our display in ~/.Xauthority (best effort;
+// many local servers accept SI:localuser without any cookie).
+fn x_auth_cookie(disp: i32, cookie: *list.ArrayList[u8]) bool {
+    cookie.*.len = 0;
+    let path: []u8 = _zag_getenv("XAUTHORITY");
+    if (path.len == 0) {
+        let home: []u8 = _zag_getenv("HOME");
+        if (home.len == 0) { return false; }
+        path = _zag_str_concat(home, "/.Xauthority");
+    }
+    let raw: []u8 = _zag_read_file(path);
+    if (raw.len <= 0) { return false; }
+
+    // copy into an ArrayList for offset reads
+    let b: list.ArrayList[u8] = list.make[u8](raw.len);
+    let ci: i32 = 0;
+    while (ci < raw.len) {
+        list.push[u8](&b, raw[ci]);
+        ci = ci + 1;
+    }
+
+    let want_num: []u8 = _zag_i64_to_str(disp as i64);
+    let found: bool = false;
+    let off: i32 = 0;
+    while (off + 4 <= b.len && !found) {
+        let _family: i32 = rd16be(&b, off);
+        off = off + 2;
+        let alen: i32 = rd16be(&b, off);
+        off = off + 2 + alen;
+        if (off + 2 > b.len) { off = b.len + 4; }
+        else {
+            let nlen: i32 = rd16be(&b, off);
+            let num_off: i32 = off + 2;
+            off = off + 2 + nlen;
+            let mlen: i32 = rd16be(&b, off);
+            let name_off: i32 = off + 2;
+            off = off + 2 + mlen;
+            let dlen: i32 = rd16be(&b, off);
+            let data_off: i32 = off + 2;
+            off = off + 2 + dlen;
+            if (off <= b.len) {
+                // display number matches (or entry has none)?
+                let num_ok: bool = nlen == 0;
+                if (nlen == want_num.len) {
+                    num_ok = true;
+                    let k: i32 = 0;
+                    while (k < nlen) {
+                        if ((b.data[num_off + k] as i32) != (want_num[k] as i32)) { num_ok = false; }
+                        k = k + 1;
+                    }
+                }
+                // auth scheme is MIT-MAGIC-COOKIE-1?
+                let scheme: []u8 = "MIT-MAGIC-COOKIE-1";
+                let name_ok: bool = mlen == scheme.len;
+                if (name_ok) {
+                    let k2: i32 = 0;
+                    while (k2 < mlen) {
+                        if ((b.data[name_off + k2] as i32) != (scheme[k2] as i32)) { name_ok = false; }
+                        k2 = k2 + 1;
+                    }
+                }
+                if (num_ok && name_ok && dlen > 0) {
+                    let k3: i32 = 0;
+                    while (k3 < dlen) {
+                        list.push[u8](cookie, b.data[data_off + k3]);
+                        k3 = k3 + 1;
+                    }
+                    found = true;
+                }
+            }
+        }
+    }
+    list.free[u8](&b);
+    return found;
+}
+
+// ── connection setup ──────────────────────────────────────────────────────────
+
+fn x_connect_socket(disp: i32) i64 {
+    let fd: i64 = xsys(41, 1, 1, 0, 0, 0, 0);   // socket(AF_UNIX, SOCK_STREAM)
+    if (fd < 0) { return 0 - 1; }
+    let sa: list.ArrayList[u8] = list.make[u8](110);
+    xw8(&sa, 1);   // AF_UNIX
+    xw8(&sa, 0);
+    xw_bytes(&sa, "/tmp/.X11-unix/X");
+    xw_bytes(&sa, _zag_i64_to_str(disp as i64));
+    xw8(&sa, 0);
+    let alen: i64 = sa.len as i64;
+    let cr: i64 = xsys(42, fd, sa.data as i64, alen, 0, 0, 0);
+    list.free[u8](&sa);
+    if (cr != 0) {
+        x_close_fd(fd);
+        return 0 - 1;
+    }
+    return fd;
+}
+
+// One setup attempt on a fresh socket. Returns the accepted fd or -1;
+// fills the reply buffer with the setup payload on success.
+fn x_try_setup(disp: i32, auth_name: []u8, auth_data: *list.ArrayList[u8], reply: *list.ArrayList[u8]) i64 {
+    let fd: i64 = x_connect_socket(disp);
+    if (fd < 0) { return 0 - 1; }
+
+    let req: list.ArrayList[u8] = list.make[u8](64);
+    xw8(&req, 108);   // 'l': little-endian
+    xw8(&req, 0);
+    xw16(&req, 11);   // protocol major
+    xw16(&req, 0);    // minor
+    xw16(&req, auth_name.len);
+    xw16(&req, auth_data.*.len);
+    xw16(&req, 0);    // pad
+    xw_bytes(&req, auth_name);
+    xw_pad4(&req);
+    let di: i32 = 0;
+    while (di < auth_data.*.len) {
+        list.push[u8](&req, auth_data.*.data[di]);
+        di = di + 1;
+    }
+    xw_pad4(&req);
+    let okw: bool = x_write_all(fd, req.data as i64, req.len as i64);
+    list.free[u8](&req);
+    if (!okw) {
+        x_close_fd(fd);
+        return 0 - 1;
+    }
+
+    let hdr: list.ArrayList[u8] = list.make[u8](8);
+    hdr.len = 8;
+    if (!x_read_n(fd, hdr.data as i64, 8)) {
+        list.free[u8](&hdr);
+        x_close_fd(fd);
+        return 0 - 1;
+    }
+    let status: i32 = rd8(&hdr, 0);
+    let words: i32 = rd16(&hdr, 6);
+    reply.*.len = 0;
+    let need: i32 = words * 4;
+    let ri: i32 = 0;
+    while (ri < need) {
+        list.push[u8](reply, 0);
+        ri = ri + 1;
+    }
+    if (need > 0) {
+        if (!x_read_n(fd, reply.*.data as i64, need as i64)) { status = 0; }
+    }
+    list.free[u8](&hdr);
+    if (status != 1) {
+        x_close_fd(fd);
+        return 0 - 1;
+    }
+    return fd;
+}
+
+fn x11_connect(w: i32, h: i32, title: []u8) *X11 {
+    let x: *X11 = new(X11{
+        .fd = 0 - 1,
+        .ok = false,
+        .rid_base = 0, .rid_incr = 1, .rid_next = 0,
+        .root = 0, .root_visual = 0, .root_depth = 24,
+        .pixmap_bpp = 32, .scanline_pad = 32,
+        .max_req_bytes = 16384,
+        .wid = 0, .gcid = 0,
+        .wm_protocols = 0, .wm_delete = 0,
+        .min_kc = 8, .ksyms_per = 0,
+        .keymap = list.make[i64](8),
+        .mx = 0, .my = 0, .btn = 0, .mods = 0, .wheel = 0,
+        .keys = list.make[i32](8),
+        .win_w = w, .win_h = h,
+        .should_close = false,
+        .focused = false,
+        .synth_seen = 0, .synth_motion_mods = 0,
+        .synth_resize_w = 0, .synth_resize_h = 0, .synth_focus = false,
+        .shm_ok = false, .shm_attached = false,
+        .shm_id = 0, .shm_addr = 0,
+        .shm_w = w, .shm_h = h, .shm_opcode = 0,
+        .req = list.make[u8](256),
+        .band = list.make[u8](4096),
+        .evt = list.make[u8](32),
+        .pollb = list.make[i64](1),
+        .needs_full = true,
+    });
+    x.*.evt.len = 32;
+
+    let disp: i32 = x_display_num();
+    let reply: list.ArrayList[u8] = list.make[u8](1024);
+
+    // Prefer the Xauthority cookie; fall back to no-auth (SI:localuser).
+    let cookie: list.ArrayList[u8] = list.make[u8](16);
+    let have_cookie: bool = x_auth_cookie(disp, &cookie);
+    let fd: i64 = 0 - 1;
+    if (have_cookie) {
+        fd = x_try_setup(disp, "MIT-MAGIC-COOKIE-1", &cookie, &reply);
+    }
+    if (fd < 0) {
+        let empty: list.ArrayList[u8] = list.make[u8](1);
+        fd = x_try_setup(disp, "", &empty, &reply);
+        list.free[u8](&empty);
+    }
+    list.free[u8](&cookie);
+    if (fd < 0) {
+        _zag_eprintln("x11: connection/authorization to the X server failed");
+        return x;
+    }
+    x.*.fd = fd;
+
+    // parse the accepted setup payload
+    x.*.rid_base = rd32(&reply, 4);
+    let mask: i64 = rd32(&reply, 8);
+    // lowest set bit of the resource-id mask = id increment
+    let incr: i64 = 1;
+    while (incr <= mask && (mask / incr) % 2 == 0) { incr = incr * 2; }
+    x.*.rid_incr = incr;
+    let vendor_len: i32 = rd16(&reply, 16);
+    x.*.max_req_bytes = rd16(&reply, 18) as i64 * 4;
+    let num_screens: i32 = rd8(&reply, 20);
+    let num_formats: i32 = rd8(&reply, 21);
+    x.*.min_kc = rd8(&reply, 26);
+    let _max_kc: i32 = rd8(&reply, 27);
+    let voff: i32 = 32 + vendor_len;
+    while (voff % 4 != 0) { voff = voff + 1; }
+    let screen_off: i32 = voff + num_formats * 8;
+    if (num_screens < 1) {
+        _zag_eprintln("x11: server reports no screens");
+        return x;
+    }
+    x.*.root = rd32(&reply, screen_off);
+    x.*.root_visual = rd32(&reply, screen_off + 32);
+    x.*.root_depth = rd8(&reply, screen_off + 38);
+    let fi: i32 = 0;
+    while (fi < num_formats) {
+        let fmt: i32 = voff + fi * 8;
+        if (rd8(&reply, fmt) == x.*.root_depth) {
+            x.*.pixmap_bpp = rd8(&reply, fmt + 1);
+            x.*.scanline_pad = rd8(&reply, fmt + 2);
+        }
+        fi = fi + 1;
+    }
+    list.free[u8](&reply);
+
+    // ── CreateWindow ──
+    x.*.wid = x_rid(x);
+    let req: *list.ArrayList[u8] = &x.*.req;
+    xw8(req, 1);                    // opcode CreateWindow
+    xw8(req, x.*.root_depth);
+    xw16(req, 10);                  // 8 words + 2 values
+    xw32(req, x.*.wid);
+    xw32(req, x.*.root);
+    xw16(req, 60);                  // x
+    xw16(req, 60);                  // y
+    xw16(req, w);
+    xw16(req, h);
+    xw16(req, 0);                   // border
+    xw16(req, 1);                   // class InputOutput
+    xw32(req, x.*.root_visual);
+    xw32(req, 2 + 2048);            // CWBackPixel | CWEventMask
+    xw32(req, 1052688);             // back pixel 0x101010
+    // KeyPress|ButtonPress|ButtonRelease|PointerMotion|Exposure|StructureNotify
+    xw32(req, 1 + 4 + 8 + 64 + 32768 + 131072);
+    if (!x_send(x)) { return x; }
+
+    // ── window title (WM_NAME) ──
+    xw8(req, 18);                   // ChangeProperty
+    xw8(req, 0);                    // Replace
+    let tpad: i32 = (4 - (title.len % 4)) % 4;
+    xw16(req, 6 + (title.len + tpad) / 4);
+    xw32(req, x.*.wid);
+    xw32(req, 39);                  // XA_WM_NAME
+    xw32(req, 31);                  // XA_STRING
+    xw8(req, 8);                    // format
+    xw8(req, 0); xw8(req, 0); xw8(req, 0);
+    xw32(req, title.len as i64);
+    xw_bytes(req, title);
+    xw_pad4(req);
+    let _s1: bool = x_send(x);
+
+    // ── atoms for the close button ──
+    x.*.wm_protocols = x_intern_atom(x, "WM_PROTOCOLS");
+    x.*.wm_delete = x_intern_atom(x, "WM_DELETE_WINDOW");
+    if (x.*.wm_protocols > 0 && x.*.wm_delete > 0) {
+        xw8(req, 18);               // ChangeProperty WM_PROTOCOLS = [WM_DELETE_WINDOW]
+        xw8(req, 0);
+        xw16(req, 7);
+        xw32(req, x.*.wid);
+        xw32(req, x.*.wm_protocols);
+        xw32(req, 4);               // XA_ATOM
+        xw8(req, 32);
+        xw8(req, 0); xw8(req, 0); xw8(req, 0);
+        xw32(req, 1);
+        xw32(req, x.*.wm_delete);
+        let _s2: bool = x_send(x);
+    }
+
+    // ── keyboard mapping ──
+    x_load_keymap(x);
+
+    // ── GC + map ──
+    x.*.gcid = x_rid(x);
+    xw8(req, 55);                   // CreateGC
+    xw8(req, 0);
+    xw16(req, 4);
+    xw32(req, x.*.gcid);
+    xw32(req, x.*.wid);
+    xw32(req, 0);                   // no values
+    xw8(req, 8);                    // MapWindow
+    xw8(req, 0);
+    xw16(req, 2);
+    xw32(req, x.*.wid);
+    let _s3: bool = x_send(x);
+
+    // MIT-SHM is opt-in: on mutter/XWayland it often "works" but never paints.
+    if (x_shm_enabled()) {
+        x_shm_try_init(x, w, h);
+    }
+
+    x.*.ok = true;
+    return x;
+}
+
+// QueryExtension (opcode 98) — returns true when `name_` is present.
+fn x_query_extension(x: *X11, name_: []u8, out_opcode: *i32) bool {
+    let req: *list.ArrayList[u8] = &x.*.req;
+    let pad: i32 = (4 - (name_.len % 4)) % 4;
+    xw8(req, 98);
+    xw8(req, 0);
+    xw16(req, 2 + (name_.len + pad) / 4);
+    xw16(req, name_.len);
+    xw16(req, 0);
+    xw_bytes(req, name_);
+    xw_pad4(req);
+    if (!x_send(x)) { return false; }
+    let rep: list.ArrayList[u8] = list.make[u8](32);
+    rep.len = 32;
+    if (!x_read_n(x.*.fd, rep.data as i64, 32)) {
+        list.free[u8](&rep);
+        return false;
+    }
+    let present: i32 = rd8(&rep, 8);
+    out_opcode.* = rd8(&rep, 9);
+    list.free[u8](&rep);
+    return present != 0;
+}
+
+// XShmQueryVersion (MIT-SHM minor 0) — setup phase only.
+fn x_shm_query_version(x: *X11, opcode: i32) bool {
+    let req: *list.ArrayList[u8] = &x.*.req;
+    xw8(req, opcode);
+    xw8(req, 0);
+    xw16(req, 1);
+    if (!x_send(x)) { return false; }
+    let rep: list.ArrayList[u8] = list.make[u8](32);
+    rep.len = 32;
+    if (!x_read_n(x.*.fd, rep.data as i64, 32)) {
+        list.free[u8](&rep);
+        return false;
+    }
+    let ok: bool = rd8(&rep, 0) == 1;
+    let major: i32 = rd16(&rep, 8);
+    list.free[u8](&rep);
+    return ok && major >= 1;
+}
+
+fn x_shm_enabled() bool {
+    let v: []u8 = _zag_getenv("TRITON_SHM");
+    return _zag_strcmp(v, "1") == 1;
+}
+
+// Best-effort MIT-SHM setup; leaves shm_ok false on any failure.
+fn x_shm_try_init(x: *X11, w: i32, h: i32) void {
+    x.*.shm_ok = false;
+    x.*.shm_attached = false;
+    x.*.shm_id = 0;
+    x.*.shm_addr = 0;
+    x.*.shm_opcode = 0;
+    x.*.shm_w = w;
+    x.*.shm_h = h;
+
+    let opcode: i32 = 0;
+    if (!x_query_extension(x, "MIT-SHM", &opcode)) { return; }
+    if (!x_shm_query_version(x, opcode)) { return; }
+
+    let size: i64 = (w * h * 4) as i64;
+    if (size <= 0) { return; }
+    let shmid: i64 = x_shmget(size);
+    if (shmid < 0) { return; }
+    let addr: i64 = x_shmat_safe(shmid);
+    if (addr < 0) {
+        x_shmctl_rmid(shmid);
+        return;
+    }
+
+    x.*.shm_ok = true;
+    x.*.shm_attached = false;
+    x.*.shm_id = shmid;
+    x.*.shm_addr = addr;
+    x.*.shm_opcode = opcode;
+}
+
+// Drop the local SysV segment after the server rejects XShmAttach.
+fn x_shm_forget(x: *X11) void {
+    if (x.*.shm_addr > 0) {
+        x_shmdt(x.*.shm_addr);
+        x.*.shm_addr = 0;
+    }
+    if (x.*.shm_id > 0) {
+        x_shmctl_rmid(x.*.shm_id);
+        x.*.shm_id = 0;
+    }
+    x.*.shm_ok = false;
+    x.*.shm_attached = false;
+}
+
+// XShmAttach is deferred until the first blit so connect-time event pumps
+// (self-test SendEvent round-trips) are not racing a BadShmSeg error.
+fn x_shm_attach(x: *X11) bool {
+    if (!x.*.shm_ok || x.*.shm_attached) { return x.*.shm_attached; }
+
+    let req: *list.ArrayList[u8] = &x.*.req;
+    xw8(req, x.*.shm_opcode);
+    xw8(req, 1);                    // XShmAttach
+    xw16(req, 4);
+    xw32(req, x.*.shm_id);
+    xw8(req, 0);                    // readOnly = false
+    xw8(req, 0); xw8(req, 0); xw8(req, 0);
+    if (!x_send(x)) {
+        x_shm_forget(x);
+        return false;
+    }
+
+    let waited: i64 = 0;
+    while (waited < 100) {
+        let p: i64 = x_poll_in(&x.*.pollb, x.*.fd, 10);
+        if (p <= 0) {
+            waited = waited + 10;
+        } else {
+            if (!x_read_n(x.*.fd, x.*.evt.data as i64, 32)) {
+                x_shm_forget(x);
+                return false;
+            }
+            if ((rd8(&x.*.evt, 0) & 127) == 0) {
+                x_shm_forget(x);
+                return false;
+            }
+            x_handle_event(x);
+        }
+    }
+    x.*.shm_attached = true;
+    return true;
+}
+
+fn x_shm_put_image(x: *X11, w: i32, h: i32, src_x: i32, src_y: i32, dst_x: i32, dst_y: i32) bool {
+    let req: *list.ArrayList[u8] = &x.*.req;
+    xw8(req, x.*.shm_opcode);
+    xw8(req, 3);                    // XShmPutImage
+    xw16(req, 12);
+    xw32(req, x.*.wid);
+    xw32(req, x.*.gcid);
+    xw16(req, w);
+    xw16(req, h);
+    xw16(req, src_x);
+    xw16(req, src_y);
+    xw16(req, w);                   // src_width
+    xw16(req, h);                   // src_height
+    xw16(req, dst_x);
+    xw16(req, dst_y);
+    xw8(req, x.*.root_depth);
+    xw8(req, 2);                    // ZPixmap
+    xw8(req, 0);                    // send_event = false
+    xw8(req, 0);
+    xw16(req, 0);
+    xw32(req, x.*.shm_id);
+    xw32(req, 0);                   // offset
+    xw8(req, 108);                  // byte_order 'l'
+    xw8(req, 0); xw8(req, 0); xw8(req, 0);
+    return x_send(x);
+}
+
+fn x_shm_teardown(x: *X11) void {
+    if (x.*.shm_attached && x.*.shm_opcode > 0 && x.*.shm_id > 0) {
+        let req: *list.ArrayList[u8] = &x.*.req;
+        xw8(req, x.*.shm_opcode);
+        xw8(req, 2);                // XShmDetach
+        xw16(req, 3);
+        xw32(req, x.*.shm_id);
+        let _s: bool = x_send(x);
+    }
+    if (x.*.shm_addr > 0) {
+        x_shmdt(x.*.shm_addr);
+        x.*.shm_addr = 0;
+    }
+    if (x.*.shm_id > 0) {
+        x_shmctl_rmid(x.*.shm_id);
+        x.*.shm_id = 0;
+    }
+    x.*.shm_ok = false;
+    x.*.shm_attached = false;
+    x.*.shm_opcode = 0;
+}
+
+// InternAtom with a synchronous reply read (setup phase only: no events yet).
+fn x_intern_atom(x: *X11, name_: []u8) i64 {
+    let req: *list.ArrayList[u8] = &x.*.req;
+    let pad: i32 = (4 - (name_.len % 4)) % 4;
+    xw8(req, 16);
+    xw8(req, 0);                    // only_if_exists = false
+    xw16(req, 2 + (name_.len + pad) / 4);
+    xw16(req, name_.len);
+    xw16(req, 0);
+    xw_bytes(req, name_);
+    xw_pad4(req);
+    if (!x_send(x)) { return 0 - 1; }
+    let rep: list.ArrayList[u8] = list.make[u8](32);
+    rep.len = 32;
+    if (!x_read_n(x.*.fd, rep.data as i64, 32)) {
+        list.free[u8](&rep);
+        return 0 - 1;
+    }
+    let kind: i32 = rd8(&rep, 0);
+    let atom: i64 = rd32(&rep, 8);
+    list.free[u8](&rep);
+    if (kind != 1) { return 0 - 1; }
+    return atom;
+}
+
+fn x_load_keymap(x: *X11) void {
+    let req: *list.ArrayList[u8] = &x.*.req;
+    let count: i32 = 248;           // keycodes min_kc..255
+    if (x.*.min_kc + count > 256) { count = 256 - x.*.min_kc; }
+    xw8(req, 101);                  // GetKeyboardMapping
+    xw8(req, 0);
+    xw16(req, 2);
+    xw8(req, x.*.min_kc);
+    xw8(req, count);
+    xw16(req, 0);
+    if (!x_send(x)) { return; }
+
+    let hdr: list.ArrayList[u8] = list.make[u8](32);
+    hdr.len = 32;
+    if (!x_read_n(x.*.fd, hdr.data as i64, 32)) {
+        list.free[u8](&hdr);
+        return;
+    }
+    x.*.ksyms_per = rd8(&hdr, 1);
+    let words: i64 = rd32(&hdr, 4);
+    list.free[u8](&hdr);
+    let body: list.ArrayList[u8] = list.make[u8]((words * 4) as i32);
+    body.len = (words * 4) as i32;
+    if (!x_read_n(x.*.fd, body.data as i64, words * 4)) {
+        list.free[u8](&body);
+        return;
+    }
+    x.*.keymap.len = 0;
+    let n: i32 = (words as i32);
+    let i: i32 = 0;
+    while (i < n) {
+        list.push[i64](&x.*.keymap, rd32(&body, i * 4));
+        i = i + 1;
+    }
+    list.free[u8](&body);
+}
+
+// keysym (column 0) for a keycode, mapped to the app's key codes
+fn x_key_code(x: *X11, keycode: i32) i32 {
+    if (x.*.ksyms_per <= 0) { return 0; }
+    let idx: i32 = (keycode - x.*.min_kc) * x.*.ksyms_per;
+    if (idx < 0 || idx >= x.*.keymap.len) { return 0; }
+    let ks: i64 = list.get[i64](x.*.keymap, idx);
+    // specials
+    if (ks == 65307) { return 27; }    // Escape
+    if (ks == 65535) { return 127; }   // Delete
+    if (ks == 65293) { return 13; }    // Return
+    if (ks == 65289) { return 9; }     // Tab
+    if (ks == 65288) { return 8; }     // BackSpace
+    if (ks == 65470) { return 290; }   // F1
+    if (ks == 65471) { return 291; }   // F2
+    if (ks == 65362) { return 17; }    // Up
+    if (ks == 65364) { return 18; }    // Down
+    if (ks == 65361) { return 19; }    // Left
+    if (ks == 65363) { return 20; }    // Right
+    if (ks >= 32 && ks < 127) {
+        let c: i32 = ks as i32;
+        if (c >= 'A' && c <= 'Z') { c = c - 'A' + 'a'; }
+        return c;
+    }
+    return 0;
+}
+
+// ── event pump ────────────────────────────────────────────────────────────────
+
+fn x11_pump(x: *X11) void {
+    x.*.wheel = 0;
+    x.*.keys.len = 0;
+    if (!x.*.ok) { return; }
+    let more: bool = true;
+    while (more) {
+        let p: i64 = x_poll_in(&x.*.pollb, x.*.fd, 0);
+        if (p <= 0) {
+            more = false;
+        } else {
+            if (!x_read_n(x.*.fd, x.*.evt.data as i64, 32)) {
+                x.*.should_close = true;
+                more = false;
+            } else {
+                x_handle_event(x);
+            }
+        }
+    }
+}
+
+fn x_handle_event(x: *X11) void {
+    let e: *list.ArrayList[u8] = &x.*.evt;
+    let raw_kind: i32 = rd8(e, 0);
+    let kind: i32 = raw_kind & 127;
+    let synthetic: bool = (raw_kind & 128) != 0;
+
+    if (kind == 0) {
+        // X error: tear down MIT-SHM so later frames use PutImage fallback.
+        if (x.*.shm_ok || x.*.shm_attached) {
+            x_shm_forget(x);
+        }
+        return;
+    }
+    if (kind == 2) {                   // KeyPress
+        if (synthetic) { x.*.synth_seen = x.*.synth_seen | 1; }
+        let code: i32 = x_key_code(x, rd8(e, 1));
+        if (code != 0) { list.push[i32](&x.*.keys, code); }
+        x_update_mods(x, rd16(e, 28));
+        return;
+    }
+    if (kind == 4) {                   // ButtonPress
+        if (synthetic) { x.*.synth_seen = x.*.synth_seen | 2; }
+        let btn: i32 = rd8(e, 1);
+        x.*.mx = rd16(e, 24);
+        x.*.my = rd16(e, 26);
+        if (btn == 1) { x.*.btn = x.*.btn | 1; }
+        if (btn == 2) { x.*.btn = x.*.btn | 2; }
+        if (btn == 3) { x.*.btn = x.*.btn | 4; }
+        if (btn == 4) { x.*.wheel = x.*.wheel + 1; }
+        if (btn == 5) { x.*.wheel = x.*.wheel - 1; }
+        x_update_mods(x, rd16(e, 28));
+        return;
+    }
+    if (kind == 5) {                   // ButtonRelease
+        let btn: i32 = rd8(e, 1);
+        if (btn == 1) { x.*.btn = x.*.btn & 6; }
+        if (btn == 2) { x.*.btn = x.*.btn & 5; }
+        if (btn == 3) { x.*.btn = x.*.btn & 3; }
+        return;
+    }
+    if (kind == 6) {                   // MotionNotify
+        if (synthetic) {
+            x.*.synth_seen = x.*.synth_seen | 4;
+            x.*.synth_motion_mods = rd16(e, 28);
+        }
+        x.*.mx = rd16(e, 24);
+        x.*.my = rd16(e, 26);
+        x_update_mods(x, rd16(e, 28));
+        return;
+    }
+    if (kind == 22) {                  // ConfigureNotify
+        let w: i32 = rd16(e, 20);
+        let h: i32 = rd16(e, 22);
+        if (synthetic) {
+            x.*.synth_seen = x.*.synth_seen | 16;
+            x.*.synth_resize_w = w; x.*.synth_resize_h = h;
+        }
+        if (w > 100 && h > 100) {
+            if (w != x.*.win_w || h != x.*.win_h) { x.*.needs_full = true; }
+            x.*.win_w = w;
+            x.*.win_h = h;
+        }
+        return;
+    }
+    if (kind == 9) {
+        if (synthetic) { x.*.synth_seen = x.*.synth_seen | 32; x.*.synth_focus = true; }
+        x.*.focused = true; return;
+    }   // FocusIn
+    if (kind == 10) { x.*.focused = false; return; } // FocusOut
+    if (kind == 33) {                  // ClientMessage
+        if (synthetic) { x.*.synth_seen = x.*.synth_seen | 8; }
+        let atom: i64 = rd32(e, 12);
+        if (atom == x.*.wm_delete) { x.*.should_close = true; }
+        return;
+    }
+    if (kind == 12) { x.*.needs_full = true; return; }   // Expose: repaint the window
+    // MappingNotify(34), ... : nothing to do.
+}
+
+fn x_update_mods(x: *X11, state: i32) void {
+    let m: i32 = 0;
+    if ((state & 1) != 0) { m = m + 1; }   // Shift
+    if ((state & 4) != 0) { m = m + 2; }   // Control
+    if ((state & 8) != 0) { m = m + 4; }   // Mod1/Alt
+    x.*.mods = m;
+}
+
+// ── frame blit: MIT-SHM XShmPutImage or banded ZPixmap PutImage ───────────────
+// `px` is the app framebuffer: w*h i64 elements, low 4 bytes = 0x00RRGGBB —
+// exactly the 32bpp little-endian ZPixmap layout for a depth-24 visual.
+
+fn x_shm_resize(x: *X11, w: i32, h: i32) void {
+    if (x.*.shm_w == w && x.*.shm_h == h) { return; }
+    x_shm_teardown(x);
+    x_shm_try_init(x, w, h);
+}
+
+// Upload a sub-rectangle of `px` (full framebuffer stride `fw`×`fh`).
+fn x11_put_frame_rect(x: *X11, px: *i64, fw: i32, fh: i32, rx: i32, ry: i32, rw: i32, rh: i32) void {
+    if (!x.*.ok) { return; }
+    if (rw <= 0 || rh <= 0) { return; }
+    if (x.*.shm_ok && (fw != x.*.shm_w || fh != x.*.shm_h)) {
+        x_shm_resize(x, fw, fh);
+    }
+
+    if (x.*.shm_ok && fw == x.*.shm_w && fh == x.*.shm_h && x.*.shm_addr > 0 &&
+        x_shm_attach(x)) {
+        let row_bytes: i32 = rw * 4;
+        if (x.*.band.cap < row_bytes) {
+            list.free[u8](&x.*.band);
+            x.*.band = list.make[u8](row_bytes);
+        }
+        let yy: i32 = 0;
+        while (yy < rh) {
+            let src_row: i32 = (ry + yy) * fw + rx;
+            let dst_off: i64 = ((ry + yy) * fw + rx) as i64 * 4;
+            let d: *u8 = x.*.band.data;
+            let xx: i32 = 0;
+            while (xx < rw) {
+                let v: i64 = px[src_row + xx];
+                let di: i32 = xx * 4;
+                d[di] = (v & 255) as u8;
+                d[di + 1] = ((v >> 8) & 255) as u8;
+                d[di + 2] = ((v >> 16) & 255) as u8;
+                d[di + 3] = 0;
+                xx = xx + 1;
+            }
+            _zag_memcpy((x.*.shm_addr + dst_off) as *i8, x.*.band.data as *i8, row_bytes);
+            yy = yy + 1;
+        }
+        if (x_shm_put_image(x, rw, rh, rx, ry, rx, ry)) {
+            return;
+        }
+        x_shm_forget(x);
+    }
+
+    let cap: i64 = x.*.max_req_bytes - 64;
+    if (cap > 1000000) { cap = 1000000; }
+    let rows_per: i32 = (cap / ((rw * 4) as i64)) as i32;
+    if (rows_per < 1) { rows_per = 1; }
+
+    let need: i32 = 24 + rows_per * rw * 4;
+    if (x.*.band.cap < need) {
+        list.free[u8](&x.*.band);
+        x.*.band = list.make[u8](need);
+    }
+
+    let y: i32 = 0;
+    while (y < rh) {
+        let rows: i32 = rows_per;
+        if (y + rows > rh) { rows = rh - y; }
+        let data_bytes: i32 = rows * rw * 4;
+
+        let b: *list.ArrayList[u8] = &x.*.band;
+        b.*.len = 0;
+        xw8(b, 72);
+        xw8(b, 2);
+        xw16(b, 6 + data_bytes / 4);
+        xw32(b, x.*.wid);
+        xw32(b, x.*.gcid);
+        xw16(b, rw);
+        xw16(b, rows);
+        xw16(b, rx);
+        xw16(b, ry + y);
+        xw8(b, 0);
+        xw8(b, x.*.root_depth);
+        xw16(b, 0);
+        b.*.len = 24 + data_bytes;
+
+        let d: *u8 = b.*.data;
+        let row: i32 = 0;
+        while (row < rows) {
+            let src_row: i32 = (ry + y + row) * fw + rx;
+            let xx: i32 = 0;
+            while (xx < rw) {
+                let v: i64 = px[src_row + xx];
+                let di: i32 = 24 + (row * rw + xx) * 4;
+                d[di] = (v & 255) as u8;
+                d[di + 1] = ((v >> 8) & 255) as u8;
+                d[di + 2] = ((v >> 16) & 255) as u8;
+                d[di + 3] = 0;
+                xx = xx + 1;
+            }
+            row = row + 1;
+        }
+        let _ok: bool = x_write_all(x.*.fd, b.*.data as i64, b.*.len as i64);
+        y = y + rows;
+    }
+}
+
+fn x11_put_frame(x: *X11, px: *i64, w: i32, h: i32) void {
+    x11_put_frame_rect(x, px, w, h, 0, 0, w, h);
+}
+
+fn x11_close(x: *X11) void {
+    x_shm_teardown(x);
+    if (x.*.fd >= 0) { x_close_fd(x.*.fd); }
+    x.*.ok = false;
+}
+
+// Update the window title (WM_NAME).
+fn x11_set_title(x: *X11, title: []u8) void {
+    if (!x.*.ok) { return; }
+    let req: *list.ArrayList[u8] = &x.*.req;
+    xw8(req, 18);                   // ChangeProperty
+    xw8(req, 0);                    // Replace
+    let tpad: i32 = (4 - (title.len % 4)) % 4;
+    xw16(req, 6 + (title.len + tpad) / 4);
+    xw32(req, x.*.wid);
+    xw32(req, 39);                  // XA_WM_NAME
+    xw32(req, 31);                  // XA_STRING
+    xw8(req, 8);
+    xw8(req, 0); xw8(req, 0); xw8(req, 0);
+    xw32(req, title.len as i64);
+    xw_bytes(req, title);
+    xw_pad4(req);
+    let _s: bool = x_send(x);
+}
+
+fn x11_request_resize(x: *X11, w: i32, h: i32) bool {
+    let req: *list.ArrayList[u8] = &x.*.req;
+    xw8(req, 12); xw8(req, 0); xw16(req, 5); // ConfigureWindow
+    xw32(req, x.*.wid);
+    xw16(req, 12); xw16(req, 0);             // CWWidth | CWHeight
+    xw32(req, w as i64); xw32(req, h as i64);
+    return x_send(x);
+}
+
+// ── SendEvent (self-test support) ─────────────────────────────────────────────
+// Relay a synthetic 32-byte event to our own window through the server —
+// exercises the full encode -> X server -> decode round trip.
+
+fn x11_send_self(x: *X11, ev: *list.ArrayList[u8], mask: i64) bool {
+    if (ev.*.len != 32) { return false; }
+    let req: *list.ArrayList[u8] = &x.*.req;
+    xw8(req, 25);                   // SendEvent
+    xw8(req, 0);                    // propagate = false
+    xw16(req, 11);
+    xw32(req, x.*.wid);             // destination
+    xw32(req, mask);
+    let i: i32 = 0;
+    while (i < 32) {
+        list.push[u8](req, ev.*.data[i]);
+        i = i + 1;
+    }
+    return x_send(x);
+}
+
+// keycode whose column-0 keysym equals `ks`, or -1
+fn x11_keycode_of(x: *X11, ks: i64) i32 {
+    let n: i32 = x.*.keymap.len / x.*.ksyms_per;
+    let i: i32 = 0;
+    while (i < n) {
+        if (list.get[i64](x.*.keymap, i * x.*.ksyms_per) == ks) {
+            return x.*.min_kc + i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+

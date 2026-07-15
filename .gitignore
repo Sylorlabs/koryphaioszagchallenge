@@ -1,0 +1,15 @@
+/build/
+/artifacts/
+/data/
+/.koryphaios/
+/*.bmp
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.pem
+*.key
+reference/Koryphaios/**/data/
+reference/Koryphaios/**/*.log
+reference/Koryphaios/desktop/src-tauri/sidecar/koryphaios-backend*
+reference/Koryphaios/desktop/src-tauri/embedded-backend/koryphaios-backend*

@@ -1,0 +1,1150 @@
+// fontdata.zag — 5x9 bitmap font rows (bits 4..0, bit4 = leftmost column).
+// Metrics: cap height rows 0..6 (7px), baseline row 6, x-height rows 2..6,
+// descenders rows 7..8 so g/j/p/q/y carry a clear tail. Authored as ASCII art
+// and generated (scratchpad/genfont.py) — do not hand-edit the tables below.
+
+fn font_row(ch: i32, row: i32) i32 {
+    if (row < 0 || row >= 9) { return 0; }
+    if (ch == 32) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 0; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 33) {
+        if (row == 0) { return 4; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 34) {
+        if (row == 0) { return 10; }
+        if (row == 1) { return 10; }
+        if (row == 2) { return 10; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 35) {
+        if (row == 0) { return 10; }
+        if (row == 1) { return 10; }
+        if (row == 2) { return 31; }
+        if (row == 3) { return 10; }
+        if (row == 4) { return 31; }
+        if (row == 5) { return 10; }
+        if (row == 6) { return 10; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 36) {
+        if (row == 0) { return 4; }
+        if (row == 1) { return 15; }
+        if (row == 2) { return 20; }
+        if (row == 3) { return 14; }
+        if (row == 4) { return 5; }
+        if (row == 5) { return 30; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 37) {
+        if (row == 0) { return 25; }
+        if (row == 1) { return 26; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 8; }
+        if (row == 4) { return 19; }
+        if (row == 5) { return 22; }
+        if (row == 6) { return 9; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 38) {
+        if (row == 0) { return 12; }
+        if (row == 1) { return 18; }
+        if (row == 2) { return 20; }
+        if (row == 3) { return 8; }
+        if (row == 4) { return 21; }
+        if (row == 5) { return 18; }
+        if (row == 6) { return 13; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 39) {
+        if (row == 0) { return 4; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 40) {
+        if (row == 0) { return 2; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 8; }
+        if (row == 3) { return 8; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 2; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 41) {
+        if (row == 0) { return 8; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 2; }
+        if (row == 3) { return 2; }
+        if (row == 4) { return 2; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 8; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 42) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 10; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 31; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 10; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 43) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 31; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 44) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 0; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 8; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 45) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 0; }
+        if (row == 3) { return 31; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 46) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 0; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 12; }
+        if (row == 6) { return 12; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 47) {
+        if (row == 0) { return 1; }
+        if (row == 1) { return 1; }
+        if (row == 2) { return 2; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 16; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 48) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 19; }
+        if (row == 2) { return 19; }
+        if (row == 3) { return 21; }
+        if (row == 4) { return 25; }
+        if (row == 5) { return 25; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 49) {
+        if (row == 0) { return 4; }
+        if (row == 1) { return 12; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 50) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 1; }
+        if (row == 3) { return 6; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 31; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 51) {
+        if (row == 0) { return 30; }
+        if (row == 1) { return 1; }
+        if (row == 2) { return 1; }
+        if (row == 3) { return 14; }
+        if (row == 4) { return 1; }
+        if (row == 5) { return 1; }
+        if (row == 6) { return 30; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 52) {
+        if (row == 0) { return 2; }
+        if (row == 1) { return 6; }
+        if (row == 2) { return 10; }
+        if (row == 3) { return 18; }
+        if (row == 4) { return 31; }
+        if (row == 5) { return 2; }
+        if (row == 6) { return 2; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 53) {
+        if (row == 0) { return 31; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 30; }
+        if (row == 3) { return 1; }
+        if (row == 4) { return 1; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 54) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 16; }
+        if (row == 3) { return 30; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 55) {
+        if (row == 0) { return 31; }
+        if (row == 1) { return 1; }
+        if (row == 2) { return 2; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 8; }
+        if (row == 6) { return 8; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 56) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 14; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 57) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 15; }
+        if (row == 4) { return 1; }
+        if (row == 5) { return 1; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 58) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 12; }
+        if (row == 2) { return 12; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 12; }
+        if (row == 5) { return 12; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 59) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 12; }
+        if (row == 2) { return 12; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 12; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 8; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 60) {
+        if (row == 0) { return 2; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 8; }
+        if (row == 3) { return 16; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 2; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 61) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 31; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 31; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 62) {
+        if (row == 0) { return 8; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 2; }
+        if (row == 3) { return 1; }
+        if (row == 4) { return 2; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 8; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 63) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 1; }
+        if (row == 3) { return 2; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 64) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 23; }
+        if (row == 3) { return 21; }
+        if (row == 4) { return 23; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 65) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 31; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 66) {
+        if (row == 0) { return 30; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 30; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 30; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 67) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 16; }
+        if (row == 3) { return 16; }
+        if (row == 4) { return 16; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 68) {
+        if (row == 0) { return 28; }
+        if (row == 1) { return 18; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 18; }
+        if (row == 6) { return 28; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 69) {
+        if (row == 0) { return 31; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 16; }
+        if (row == 3) { return 28; }
+        if (row == 4) { return 16; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 31; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 70) {
+        if (row == 0) { return 31; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 16; }
+        if (row == 3) { return 28; }
+        if (row == 4) { return 16; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 16; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 71) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 16; }
+        if (row == 3) { return 23; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 72) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 31; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 73) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 74) {
+        if (row == 0) { return 7; }
+        if (row == 1) { return 2; }
+        if (row == 2) { return 2; }
+        if (row == 3) { return 2; }
+        if (row == 4) { return 18; }
+        if (row == 5) { return 18; }
+        if (row == 6) { return 12; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 75) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 18; }
+        if (row == 2) { return 20; }
+        if (row == 3) { return 24; }
+        if (row == 4) { return 20; }
+        if (row == 5) { return 18; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 76) {
+        if (row == 0) { return 16; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 16; }
+        if (row == 3) { return 16; }
+        if (row == 4) { return 16; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 31; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 77) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 27; }
+        if (row == 2) { return 21; }
+        if (row == 3) { return 21; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 78) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 25; }
+        if (row == 2) { return 21; }
+        if (row == 3) { return 21; }
+        if (row == 4) { return 19; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 79) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 80) {
+        if (row == 0) { return 30; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 30; }
+        if (row == 4) { return 16; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 16; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 81) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 21; }
+        if (row == 5) { return 18; }
+        if (row == 6) { return 13; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 82) {
+        if (row == 0) { return 30; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 30; }
+        if (row == 4) { return 20; }
+        if (row == 5) { return 18; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 83) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 16; }
+        if (row == 3) { return 14; }
+        if (row == 4) { return 1; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 84) {
+        if (row == 0) { return 31; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 85) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 86) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 10; }
+        if (row == 5) { return 10; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 87) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 21; }
+        if (row == 4) { return 21; }
+        if (row == 5) { return 27; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 88) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 10; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 10; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 89) {
+        if (row == 0) { return 17; }
+        if (row == 1) { return 17; }
+        if (row == 2) { return 10; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 90) {
+        if (row == 0) { return 31; }
+        if (row == 1) { return 1; }
+        if (row == 2) { return 2; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 31; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 91) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 8; }
+        if (row == 2) { return 8; }
+        if (row == 3) { return 8; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 8; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 92) {
+        if (row == 0) { return 16; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 8; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 2; }
+        if (row == 5) { return 1; }
+        if (row == 6) { return 1; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 93) {
+        if (row == 0) { return 14; }
+        if (row == 1) { return 2; }
+        if (row == 2) { return 2; }
+        if (row == 3) { return 2; }
+        if (row == 4) { return 2; }
+        if (row == 5) { return 2; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 94) {
+        if (row == 0) { return 4; }
+        if (row == 1) { return 10; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 95) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 0; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 31; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 96) {
+        if (row == 0) { return 8; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 0; }
+        if (row == 3) { return 0; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 97) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 14; }
+        if (row == 3) { return 1; }
+        if (row == 4) { return 15; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 15; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 98) {
+        if (row == 0) { return 16; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 30; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 30; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 99) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 14; }
+        if (row == 3) { return 16; }
+        if (row == 4) { return 16; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 100) {
+        if (row == 0) { return 1; }
+        if (row == 1) { return 1; }
+        if (row == 2) { return 15; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 15; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 101) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 14; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 31; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 102) {
+        if (row == 0) { return 6; }
+        if (row == 1) { return 9; }
+        if (row == 2) { return 8; }
+        if (row == 3) { return 28; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 8; }
+        if (row == 6) { return 8; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 103) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 15; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 15; }
+        if (row == 6) { return 1; }
+        if (row == 7) { return 17; }
+        if (row == 8) { return 14; }
+        return 0;
+    }
+    if (ch == 104) {
+        if (row == 0) { return 16; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 30; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 105) {
+        if (row == 0) { return 4; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 12; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 106) {
+        if (row == 0) { return 2; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 6; }
+        if (row == 3) { return 2; }
+        if (row == 4) { return 2; }
+        if (row == 5) { return 2; }
+        if (row == 6) { return 2; }
+        if (row == 7) { return 18; }
+        if (row == 8) { return 12; }
+        return 0;
+    }
+    if (ch == 107) {
+        if (row == 0) { return 16; }
+        if (row == 1) { return 16; }
+        if (row == 2) { return 18; }
+        if (row == 3) { return 20; }
+        if (row == 4) { return 24; }
+        if (row == 5) { return 20; }
+        if (row == 6) { return 18; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 108) {
+        if (row == 0) { return 12; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 109) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 26; }
+        if (row == 3) { return 21; }
+        if (row == 4) { return 21; }
+        if (row == 5) { return 21; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 110) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 30; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 111) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 14; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 14; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 112) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 30; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 30; }
+        if (row == 6) { return 16; }
+        if (row == 7) { return 16; }
+        if (row == 8) { return 16; }
+        return 0;
+    }
+    if (ch == 113) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 15; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 15; }
+        if (row == 6) { return 1; }
+        if (row == 7) { return 1; }
+        if (row == 8) { return 1; }
+        return 0;
+    }
+    if (ch == 114) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 22; }
+        if (row == 3) { return 25; }
+        if (row == 4) { return 16; }
+        if (row == 5) { return 16; }
+        if (row == 6) { return 16; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 115) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 15; }
+        if (row == 3) { return 16; }
+        if (row == 4) { return 14; }
+        if (row == 5) { return 1; }
+        if (row == 6) { return 30; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 116) {
+        if (row == 0) { return 8; }
+        if (row == 1) { return 8; }
+        if (row == 2) { return 28; }
+        if (row == 3) { return 8; }
+        if (row == 4) { return 8; }
+        if (row == 5) { return 9; }
+        if (row == 6) { return 6; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 117) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 17; }
+        if (row == 6) { return 15; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 118) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 10; }
+        if (row == 5) { return 10; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 119) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 21; }
+        if (row == 4) { return 21; }
+        if (row == 5) { return 21; }
+        if (row == 6) { return 10; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 120) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 10; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 10; }
+        if (row == 6) { return 17; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 121) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 17; }
+        if (row == 3) { return 17; }
+        if (row == 4) { return 17; }
+        if (row == 5) { return 15; }
+        if (row == 6) { return 1; }
+        if (row == 7) { return 17; }
+        if (row == 8) { return 14; }
+        return 0;
+    }
+    if (ch == 122) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 31; }
+        if (row == 3) { return 2; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 8; }
+        if (row == 6) { return 31; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 123) {
+        if (row == 0) { return 6; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 12; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 6; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 124) {
+        if (row == 0) { return 4; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 4; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 4; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 125) {
+        if (row == 0) { return 12; }
+        if (row == 1) { return 4; }
+        if (row == 2) { return 4; }
+        if (row == 3) { return 6; }
+        if (row == 4) { return 4; }
+        if (row == 5) { return 4; }
+        if (row == 6) { return 12; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    if (ch == 126) {
+        if (row == 0) { return 0; }
+        if (row == 1) { return 0; }
+        if (row == 2) { return 13; }
+        if (row == 3) { return 22; }
+        if (row == 4) { return 0; }
+        if (row == 5) { return 0; }
+        if (row == 6) { return 0; }
+        if (row == 7) { return 0; }
+        if (row == 8) { return 0; }
+        return 0;
+    }
+    return 0;
+}
+
