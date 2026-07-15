@@ -1,0 +1,17 @@
+@import("../src/zrt/tls.zag")
+fn main() i32 {
+    let dns: DnsResult = dns_resolve("api.openai.com");
+    let fd: i64 = net_connect_ip(dns.ip0, dns.ip1, dns.ip2, dns.ip3, 443);
+    if (fd < 0) { _zag_println("connect fail"); return 1; }
+    net_set_rcvtimeo(fd, 10);
+    let conn: *TlsConn = tls_new_conn(fd);
+    let priv: []u8 = tls_rand(32);
+    let ch: []u8 = tls_client_hello("api.openai.com", tls_rand(32), tls_rand(32), x25519_base(priv));
+    let sent: bool = tls_send_plain(conn, 22, ch);
+    _zag_println(_zag_str_concat("tls_send_plain=", _zag_i64_to_str(sent as i64)));
+    let rec: TlsRecord = tls_read_record(conn.*.fd);
+    _zag_println(_zag_str_concat("rec ok=", _zag_i64_to_str(rec.ok as i64)));
+    _zag_println(_zag_str_concat("rec ctype=", _zag_i64_to_str(rec.ctype as i64)));
+    _zag_println(_zag_str_concat("rec len=", _zag_i64_to_str(rec.payload.len as i64)));
+    return 0;
+}

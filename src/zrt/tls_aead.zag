@@ -1,0 +1,490 @@
+// src/zrt/tls_aead.zag — ChaCha20, Poly1305, and the ChaCha20-Poly1305 AEAD
+// (RFC 8439), implemented from scratch for the from-scratch TLS 1.3 client.
+//
+// Zag has no u32 type with wrapping arithmetic and no fixed-size arrays, so:
+//   - all 32-bit ChaCha20 word math is done in i64, masked to 32 bits with
+//     `& 4294967295` after every add/xor/shift (same style as sha1.zag);
+//   - the 16-word ChaCha state and the 5-limb Poly1305 accumulator/r/s live
+//     in malloc'd *i64 scratch buffers, indexed like small arrays.
+//
+// Helpers are prefixed `cc_` (ChaCha20), `poly_` (Poly1305) or `aead_`
+// (the combined construction) to keep this module's symbols collision-free
+// in the flat @import namespace used across src/zrt/. The four public entry
+// points are unprefixed, per the TLS layer's expected API:
+//
+//   chacha20_xor(key, counter, nonce, input) []u8
+//   poly1305_mac(key, msg) []u8
+//   aead_seal(key, nonce, aad, plaintext) []u8
+//   aead_open(key, nonce, aad, ct_and_tag) ?[]u8
+
+@import("str.zag")
+
+// ── ChaCha20 (RFC 8439 §2.3 / §2.4) ─────────────────────────────────────────
+
+// Rotate a masked 32-bit value left by n (1 <= n <= 31).
+fn cc_rotl(x: i64, n: i64) i64 {
+    let xm: i64 = x & 4294967295;
+    return ((xm << n) | (xm >> (32 - n))) & 4294967295;
+}
+
+// Read a little-endian u32 word from a []u8 slice at byte offset `off`.
+fn cc_rd_u32le(b: []u8, off: i32) i64 {
+    let b0: i64 = (b[off] as i64) & 255;
+    let b1: i64 = (b[off + 1] as i64) & 255;
+    let b2: i64 = (b[off + 2] as i64) & 255;
+    let b3: i64 = (b[off + 3] as i64) & 255;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+// Write a little-endian u32 word into a *u8 buffer at byte offset `off`.
+fn cc_wr_u32le(p: *u8, off: i32, v: i64) void {
+    p[off] = (v & 255) as u8;
+    p[off + 1] = ((v >> 8) & 255) as u8;
+    p[off + 2] = ((v >> 16) & 255) as u8;
+    p[off + 3] = ((v >> 24) & 255) as u8;
+}
+
+// One ChaCha20 quarter-round, operating in place on state words st[ai..di].
+fn cc_quarterround(st: *i64, ai: i32, bi: i32, ci: i32, di: i32) void {
+    let a: i64 = st[ai];
+    let b: i64 = st[bi];
+    let c: i64 = st[ci];
+    let d: i64 = st[di];
+
+    a = (a + b) & 4294967295;
+    d = d ^ a;
+    d = cc_rotl(d, 16);
+
+    c = (c + d) & 4294967295;
+    b = b ^ c;
+    b = cc_rotl(b, 12);
+
+    a = (a + b) & 4294967295;
+    d = d ^ a;
+    d = cc_rotl(d, 8);
+
+    c = (c + d) & 4294967295;
+    b = b ^ c;
+    b = cc_rotl(b, 7);
+
+    st[ai] = a;
+    st[bi] = b;
+    st[ci] = c;
+    st[di] = d;
+}
+
+// Fill the 16-word ChaCha20 state: 4 constants, 8 key words, 1 counter word,
+// 3 nonce words (all little-endian).
+fn cc_init_state(st: *i64, key: []u8, counter: i64, nonce: []u8) void {
+    st[0] = 1634760805;   // "expa"
+    st[1] = 857760878;    // "nd 3"
+    st[2] = 2036477234;   // "2-by"
+    st[3] = 1797285236;   // "te k"
+    st[4] = cc_rd_u32le(key, 0);
+    st[5] = cc_rd_u32le(key, 4);
+    st[6] = cc_rd_u32le(key, 8);
+    st[7] = cc_rd_u32le(key, 12);
+    st[8] = cc_rd_u32le(key, 16);
+    st[9] = cc_rd_u32le(key, 20);
+    st[10] = cc_rd_u32le(key, 24);
+    st[11] = cc_rd_u32le(key, 28);
+    st[12] = counter & 4294967295;
+    st[13] = cc_rd_u32le(nonce, 0);
+    st[14] = cc_rd_u32le(nonce, 4);
+    st[15] = cc_rd_u32le(nonce, 8);
+}
+
+// One 64-byte ChaCha20 keystream block (RFC 8439 §2.3.1), malloc'd.
+fn cc_block(key: []u8, counter: i64, nonce: []u8) []u8 {
+    let st_raw: *i8 = _zag_malloc(16 * 8);
+    let st: *i64 = st_raw as *i64;
+    cc_init_state(st, key, counter, nonce);
+
+    let orig_raw: *i8 = _zag_malloc(16 * 8);
+    let orig: *i64 = orig_raw as *i64;
+    let i: i32 = 0;
+    while (i < 16) {
+        orig[i] = st[i];
+        i = i + 1;
+    }
+
+    let round: i32 = 0;
+    while (round < 10) {
+        // column rounds
+        cc_quarterround(st, 0, 4, 8, 12);
+        cc_quarterround(st, 1, 5, 9, 13);
+        cc_quarterround(st, 2, 6, 10, 14);
+        cc_quarterround(st, 3, 7, 11, 15);
+        // diagonal rounds
+        cc_quarterround(st, 0, 5, 10, 15);
+        cc_quarterround(st, 1, 6, 11, 12);
+        cc_quarterround(st, 2, 7, 8, 13);
+        cc_quarterround(st, 3, 4, 9, 14);
+        round = round + 1;
+    }
+
+    i = 0;
+    while (i < 16) {
+        st[i] = (st[i] + orig[i]) & 4294967295;
+        i = i + 1;
+    }
+
+    let out_raw: *i8 = _zag_malloc(64);
+    let out: *u8 = out_raw as *u8;
+    i = 0;
+    while (i < 16) {
+        cc_wr_u32le(out, i * 4, st[i]);
+        i = i + 1;
+    }
+
+    _zag_free(st_raw);
+    _zag_free(orig_raw);
+
+    return out[0..64];
+}
+
+// PUBLIC: ChaCha20 keystream XOR'd with `input` (RFC 8439 §2.4). key=32B,
+// nonce=12B, counter is the initial 32-bit block counter. Malloc'd result,
+// same length as `input`.
+fn chacha20_xor(key: []u8, counter: i64, nonce: []u8, input: []u8) []u8 {
+    let n: i32 = input.len;
+    let alloc_len: i32 = n;
+    if (alloc_len < 1) { alloc_len = 1; }
+    let out_raw: *i8 = _zag_malloc(alloc_len);
+    let out: *u8 = out_raw as *u8;
+
+    let blk_counter: i64 = counter;
+    let off: i32 = 0;
+    while (off < n) {
+        let ks: []u8 = cc_block(key, blk_counter, nonce);
+        let remain: i32 = n - off;
+        let take: i32 = 64;
+        if (remain < 64) { take = remain; }
+        let j: i32 = 0;
+        while (j < take) {
+            out[off + j] = input[off + j] ^ ks[j];
+            j = j + 1;
+        }
+        _zag_free(_zag_slice_ptr(ks) as *i8);
+        blk_counter = blk_counter + 1;
+        off = off + 64;
+    }
+    return out[0..n];
+}
+
+// ── Poly1305 (RFC 8439 §2.5) ────────────────────────────────────────────────
+//
+// Standard 5-limb radix-2^26 accumulator (the "poly1305-donna" layout):
+// each limb is an i64 holding < 2^26 (mostly), so a 26x26-bit product is
+// < 2^52 and the sum of five such products is < 2^55 — comfortably inside
+// i64's 63-bit range with no overflow.
+
+// Read a little-endian u32 word from a []u8 slice at byte offset `off`.
+fn poly_rd_u32le(b: []u8, off: i32) i64 {
+    let b0: i64 = (b[off] as i64) & 255;
+    let b1: i64 = (b[off + 1] as i64) & 255;
+    let b2: i64 = (b[off + 2] as i64) & 255;
+    let b3: i64 = (b[off + 3] as i64) & 255;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+// Write a little-endian u32 word into a *u8 buffer at byte offset `off`.
+fn poly_wr_u32le(p: *u8, off: i32, v: i64) void {
+    p[off] = (v & 255) as u8;
+    p[off + 1] = ((v >> 8) & 255) as u8;
+    p[off + 2] = ((v >> 16) & 255) as u8;
+    p[off + 3] = ((v >> 24) & 255) as u8;
+}
+
+// Absorb one 16-byte message block (already split into four little-endian
+// 32-bit words t0..t3) into the accumulator h[0..4], then reduce mod
+// 2^130-5. `hibit` is 2^24 (the block's implicit "1" bit at position 2^128)
+// for a full 16-byte block, or 0 for a zero-padded final partial block
+// (whose "1" byte is already embedded in t0..t3).
+fn poly_process_block(h: *i64, r: *i64, s: *i64, t0: i64, t1: i64, t2: i64, t3: i64, hibit: i64) void {
+    let m26: i64 = 67108863; // 2^26 - 1
+
+    let h0: i64 = h[0];
+    let h1: i64 = h[1];
+    let h2: i64 = h[2];
+    let h3: i64 = h[3];
+    let h4: i64 = h[4];
+
+    h0 = h0 + (t0 & m26);
+    h1 = h1 + (((t1 << 6) | (t0 >> 26)) & m26);
+    h2 = h2 + (((t2 << 12) | (t1 >> 20)) & m26);
+    h3 = h3 + (((t3 << 18) | (t2 >> 14)) & m26);
+    h4 = h4 + ((t3 >> 8) | hibit);
+
+    let r0: i64 = r[0];
+    let r1: i64 = r[1];
+    let r2: i64 = r[2];
+    let r3: i64 = r[3];
+    let r4: i64 = r[4];
+    let s1: i64 = s[1];
+    let s2: i64 = s[2];
+    let s3: i64 = s[3];
+    let s4: i64 = s[4];
+
+    // h *= r  (mod 2^130-5, via s_i = 5*r_i folding the high limb down)
+    let d0: i64 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1;
+    let d1: i64 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2;
+    let d2: i64 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3;
+    let d3: i64 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4;
+    let d4: i64 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0;
+
+    let c: i64 = d0 >> 26;
+    h0 = d0 & m26;
+    d1 = d1 + c; c = d1 >> 26; h1 = d1 & m26;
+    d2 = d2 + c; c = d2 >> 26; h2 = d2 & m26;
+    d3 = d3 + c; c = d3 >> 26; h3 = d3 & m26;
+    d4 = d4 + c; c = d4 >> 26; h4 = d4 & m26;
+    h0 = h0 + c * 5; c = h0 >> 26; h0 = h0 & m26;
+    h1 = h1 + c;
+
+    h[0] = h0;
+    h[1] = h1;
+    h[2] = h2;
+    h[3] = h3;
+    h[4] = h4;
+}
+
+// Finish: fully carry h, conditionally subtract p = 2^130-5, reduce mod
+// 2^128, add the (little-endian) pad words with carry, and serialize the
+// 16-byte tag.
+fn poly_finish(h: *i64, pad0: i64, pad1: i64, pad2: i64, pad3: i64) []u8 {
+    let m26: i64 = 67108863;
+
+    let h0: i64 = h[0];
+    let h1: i64 = h[1];
+    let h2: i64 = h[2];
+    let h3: i64 = h[3];
+    let h4: i64 = h[4];
+
+    let c: i64 = h1 >> 26; h1 = h1 & m26;
+    h2 = h2 + c; c = h2 >> 26; h2 = h2 & m26;
+    h3 = h3 + c; c = h3 >> 26; h3 = h3 & m26;
+    h4 = h4 + c; c = h4 >> 26; h4 = h4 & m26;
+    h0 = h0 + c * 5; c = h0 >> 26; h0 = h0 & m26;
+    h1 = h1 + c;
+
+    // g = h - p (p = 2^130 - 5); since everything here is a genuine signed
+    // i64 (not a wrapped unsigned word), "did the subtraction borrow" is
+    // just g4 < 0 — no bit-trick masking needed.
+    let g0: i64 = h0 + 5;
+    c = g0 >> 26; g0 = g0 & m26;
+    let g1: i64 = h1 + c; c = g1 >> 26; g1 = g1 & m26;
+    let g2: i64 = h2 + c; c = g2 >> 26; g2 = g2 & m26;
+    let g3: i64 = h3 + c; c = g3 >> 26; g3 = g3 & m26;
+    let g4: i64 = h4 + c - 67108864; // - 2^26
+
+    // if h >= p (no borrow), use g = h - p; else keep h.
+    if (g4 >= 0) {
+        h0 = g0; h1 = g1; h2 = g2; h3 = g3; h4 = g4;
+    }
+
+    // h = h % 2^128, repacked into four 32-bit limbs.
+    h0 = (h0 | (h1 << 26)) & 4294967295;
+    h1 = ((h1 >> 6) | (h2 << 20)) & 4294967295;
+    h2 = ((h2 >> 12) | (h3 << 14)) & 4294967295;
+    h3 = ((h3 >> 18) | (h4 << 8)) & 4294967295;
+
+    // mac = (h + pad) % 2^128
+    let f: i64 = h0 + pad0;
+    h0 = f & 4294967295;
+    f = h1 + pad1 + (f >> 32);
+    h1 = f & 4294967295;
+    f = h2 + pad2 + (f >> 32);
+    h2 = f & 4294967295;
+    f = h3 + pad3 + (f >> 32);
+    h3 = f & 4294967295;
+
+    let raw: *i8 = _zag_malloc(16);
+    let out: *u8 = raw as *u8;
+    poly_wr_u32le(out, 0, h0);
+    poly_wr_u32le(out, 4, h1);
+    poly_wr_u32le(out, 8, h2);
+    poly_wr_u32le(out, 12, h3);
+    return out[0..16];
+}
+
+// PUBLIC: Poly1305 one-time-key MAC (RFC 8439 §2.5). key=32B (r=first 16,
+// clamped; s=last 16). Returns a malloc'd 16-byte tag.
+fn poly1305_mac(key: []u8, msg: []u8) []u8 {
+    let t0: i64 = poly_rd_u32le(key, 0);
+    let t1: i64 = poly_rd_u32le(key, 4);
+    let t2: i64 = poly_rd_u32le(key, 8);
+    let t3: i64 = poly_rd_u32le(key, 12);
+
+    // Clamped 26-bit limbs of r (the masks below fold the RFC 8439 clamp
+    // r &= 0x0ffffffc0ffffffc0ffffffc0fffffff directly into the split).
+    let r_raw: *i8 = _zag_malloc(5 * 8);
+    let r: *i64 = r_raw as *i64;
+    r[0] = t0 & 67108863;                              // 0x3ffffff
+    r[1] = ((t0 >> 26) | (t1 << 6)) & 67108611;         // 0x3ffff03
+    r[2] = ((t1 >> 20) | (t2 << 12)) & 67092735;        // 0x3ffc0ff
+    r[3] = ((t2 >> 14) | (t3 << 18)) & 66076671;        // 0x3f03fff
+    r[4] = (t3 >> 8) & 1048575;                         // 0x00fffff
+
+    let s_raw: *i8 = _zag_malloc(5 * 8);
+    let s: *i64 = s_raw as *i64;
+    s[0] = 0;
+    s[1] = r[1] * 5;
+    s[2] = r[2] * 5;
+    s[3] = r[3] * 5;
+    s[4] = r[4] * 5;
+
+    let pad0: i64 = poly_rd_u32le(key, 16);
+    let pad1: i64 = poly_rd_u32le(key, 20);
+    let pad2: i64 = poly_rd_u32le(key, 24);
+    let pad3: i64 = poly_rd_u32le(key, 28);
+
+    let h_raw: *i8 = _zag_malloc(5 * 8);
+    let h: *i64 = h_raw as *i64;
+    h[0] = 0; h[1] = 0; h[2] = 0; h[3] = 0; h[4] = 0;
+
+    let hibit: i64 = 16777216; // 2^24 (the "1 << 128" contribution)
+
+    let off: i32 = 0;
+    while (off + 16 <= msg.len) {
+        let bt0: i64 = poly_rd_u32le(msg, off);
+        let bt1: i64 = poly_rd_u32le(msg, off + 4);
+        let bt2: i64 = poly_rd_u32le(msg, off + 8);
+        let bt3: i64 = poly_rd_u32le(msg, off + 12);
+        poly_process_block(h, r, s, bt0, bt1, bt2, bt3, hibit);
+        off = off + 16;
+    }
+
+    let rem: i32 = msg.len - off;
+    if (rem > 0) {
+        let buf_raw: *i8 = _zag_malloc(16);
+        let buf: *u8 = buf_raw as *u8;
+        let i: i32 = 0;
+        while (i < 16) { buf[i] = 0; i = i + 1; }
+        i = 0;
+        while (i < rem) { buf[i] = msg[off + i]; i = i + 1; }
+        buf[rem] = 1;
+        let bslice: []u8 = buf[0..16];
+        let bt0: i64 = poly_rd_u32le(bslice, 0);
+        let bt1: i64 = poly_rd_u32le(bslice, 4);
+        let bt2: i64 = poly_rd_u32le(bslice, 8);
+        let bt3: i64 = poly_rd_u32le(bslice, 12);
+        poly_process_block(h, r, s, bt0, bt1, bt2, bt3, 0);
+        _zag_free(buf_raw);
+    }
+
+    let tag: []u8 = poly_finish(h, pad0, pad1, pad2, pad3);
+
+    _zag_free(r_raw);
+    _zag_free(s_raw);
+    _zag_free(h_raw);
+
+    return tag;
+}
+
+// ── AEAD_CHACHA20_POLY1305 (RFC 8439 §2.8) ──────────────────────────────────
+
+// Write a little-endian u64 into a *u8 buffer at byte offset `off`.
+fn aead_wr_u64le(p: *u8, off: i32, v: i64) void {
+    let vv: i64 = v;
+    let i: i32 = 0;
+    while (i < 8) {
+        p[off + i] = (vv & 255) as u8;
+        vv = vv >> 8;
+        i = i + 1;
+    }
+}
+
+// Build the Poly1305 input: aad || pad16(aad) || ct || pad16(ct) ||
+// le64(aad.len) || le64(ct.len). Malloc'd.
+fn aead_build_mac_input(aad: []u8, ct: []u8) []u8 {
+    let aad_pad: i32 = (16 - (aad.len % 16)) % 16;
+    let ct_pad: i32 = (16 - (ct.len % 16)) % 16;
+    let total: i32 = aad.len + aad_pad + ct.len + ct_pad + 16;
+    let raw: *i8 = _zag_malloc(total);
+    let buf: *u8 = raw as *u8;
+
+    let off: i32 = 0;
+    let i: i32 = 0;
+    while (i < aad.len) { buf[off + i] = aad[i]; i = i + 1; }
+    off = off + aad.len;
+    i = 0;
+    while (i < aad_pad) { buf[off + i] = 0; i = i + 1; }
+    off = off + aad_pad;
+    i = 0;
+    while (i < ct.len) { buf[off + i] = ct[i]; i = i + 1; }
+    off = off + ct.len;
+    i = 0;
+    while (i < ct_pad) { buf[off + i] = 0; i = i + 1; }
+    off = off + ct_pad;
+
+    aead_wr_u64le(buf, off, aad.len as i64);
+    off = off + 8;
+    aead_wr_u64le(buf, off, ct.len as i64);
+    off = off + 8;
+
+    return buf[0..total];
+}
+
+// PUBLIC: AEAD_CHACHA20_POLY1305 seal (RFC 8439 §2.8). Returns malloc'd
+// ciphertext || 16-byte tag (length = plaintext.len + 16).
+fn aead_seal(key: []u8, nonce: []u8, aad: []u8, plaintext: []u8) []u8 {
+    let ks0: []u8 = cc_block(key, 0, nonce);
+    let poly_key: []u8 = ks0[0..32];
+
+    let ciphertext: []u8 = chacha20_xor(key, 1, nonce, plaintext);
+
+    let mac_input: []u8 = aead_build_mac_input(aad, ciphertext);
+    let tag: []u8 = poly1305_mac(poly_key, mac_input);
+
+    let out_len: i32 = ciphertext.len + 16;
+    let out_raw: *i8 = _zag_malloc(out_len);
+    let out: *u8 = out_raw as *u8;
+    let i: i32 = 0;
+    while (i < ciphertext.len) { out[i] = ciphertext[i]; i = i + 1; }
+    i = 0;
+    while (i < 16) { out[ciphertext.len + i] = tag[i]; i = i + 1; }
+
+    _zag_free(_zag_slice_ptr(ks0) as *i8);
+    _zag_free(_zag_slice_ptr(ciphertext) as *i8);
+    _zag_free(_zag_slice_ptr(mac_input) as *i8);
+    _zag_free(_zag_slice_ptr(tag) as *i8);
+
+    return out[0..out_len];
+}
+
+// PUBLIC: AEAD_CHACHA20_POLY1305 open (RFC 8439 §2.8). Verifies the 16-byte
+// tag (all bytes compared, no early exit) and returns the malloc'd
+// plaintext on match, or null on tag mismatch / input shorter than 16 bytes.
+fn aead_open(key: []u8, nonce: []u8, aad: []u8, ct_and_tag: []u8) ?[]u8 {
+    if (ct_and_tag.len < 16) { return null; }
+
+    let ct_len: i32 = ct_and_tag.len - 16;
+    let ciphertext: []u8 = ct_and_tag[0..ct_len];
+    let tag_given: []u8 = ct_and_tag[ct_len..ct_and_tag.len];
+
+    let ks0: []u8 = cc_block(key, 0, nonce);
+    let poly_key: []u8 = ks0[0..32];
+
+    let mac_input: []u8 = aead_build_mac_input(aad, ciphertext);
+    let tag_computed: []u8 = poly1305_mac(poly_key, mac_input);
+
+    let diff: i32 = 0;
+    let i: i32 = 0;
+    while (i < 16) {
+        let d: u8 = tag_computed[i] ^ tag_given[i];
+        diff = diff | (d as i32);
+        i = i + 1;
+    }
+
+    _zag_free(_zag_slice_ptr(ks0) as *i8);
+    _zag_free(_zag_slice_ptr(mac_input) as *i8);
+    _zag_free(_zag_slice_ptr(tag_computed) as *i8);
+
+    if (diff != 0) {
+        return null;
+    }
+
+    let plaintext: []u8 = chacha20_xor(key, 1, nonce, ciphertext);
+    return plaintext;
+}

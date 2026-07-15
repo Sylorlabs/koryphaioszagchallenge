@@ -1,0 +1,65 @@
+// backend/archive.zag — per-session context archive (tool-activity log).
+//
+// Every tool call/result and file edit is appended (full fidelity) to
+//   <data_dir>/sessions/<sid>/context-archive.jsonl
+// while the LLM context keeps only a capped copy. GET /api/sessions/:id/context
+// serves the archive back to the UI's context bar.
+
+@import("tools.zag")
+
+fn archive_dir(app: *AppState, sid: []u8) []u8 {
+    return _zag_str_concat(app.*.data_dir, _zag_str_concat("/sessions/", sid));
+}
+
+fn archive_path(app: *AppState, sid: []u8) []u8 {
+    return _zag_str_concat(archive_dir(app, sid), "/context-archive.jsonl");
+}
+
+// Append one archive entry (one JSON object per line).
+fn archive_append(app: *AppState, sid: []u8, kind: []u8, label: []u8, content: []u8) void {
+    util_mkdir(_zag_str_concat(app.*.data_dir, "/sessions"));
+    util_mkdir(archive_dir(app, sid));
+    let cap: i32 = content.len;
+    if (cap > 4000) { cap = 4000; }
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"id\":\"");
+    sb_app(&sb, util_nanoid(10));
+    sb_app(&sb, "\",\"ts\":");
+    sb_int(&sb, util_now_ms());
+    sb_app(&sb, ",\"kind\":\"");
+    sb_app(&sb, kind);
+    sb_app(&sb, "\",\"label\":\"");
+    sb_app(&sb, str_escape_json(label));
+    sb_app(&sb, "\",\"content\":\"");
+    sb_app(&sb, str_escape_json(content[0..cap]));
+    sb_app(&sb, "\",\"prunedForAgent\":false}\n");
+    // append: read + rewrite (single-threaded server; entries are small)
+    let path: []u8 = archive_path(app, sid);
+    let cur: []u8 = util_read_or_empty(path);
+    util_write_atomic(path, _zag_str_concat(cur, sb_slice(&sb)));
+}
+
+// Build the JSON array the context endpoint returns from the JSONL file.
+fn archive_json(app: *AppState, sid: []u8) []u8 {
+    let raw: []u8 = util_read_or_empty(archive_path(app, sid));
+    if (raw.len == 0) { return "[]"; }
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '[' as u8);
+    let first: bool = true;
+    let start: i32 = 0;
+    let i: i32 = 0;
+    while (i <= raw.len) {
+        if (i == raw.len || raw[i] == 10) {
+            let line: []u8 = str_trim(raw[start..i]);
+            if (line.len > 0) {
+                if (!first) { sb_ch(&sb, ',' as u8); }
+                first = false;
+                sb_app(&sb, line);
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    sb_ch(&sb, ']' as u8);
+    return sb_slice(&sb);
+}

@@ -1,0 +1,28 @@
+@import("../zagstd/rt.zag")
+
+struct Rec { n: i32, p: []u8, ok: bool }
+
+fn maybe_slice(x: i32) ?[]u8 {
+    if (x > 0) { return "hello"; }
+    return null;
+}
+
+// Pattern A: capture into outer var, build struct at end
+fn variant_a(x: i32) Rec {
+    let n: i32 = 0;
+    let p: []u8 = "";
+    let ok: bool = false;
+    let m: ?[]u8 = maybe_slice(x);
+    if (m) |b| {
+        n = 1; p = b; ok = true;
+    }
+    return Rec{ .n = n, .p = p, .ok = ok };
+}
+
+fn main() i32 {
+    let r: Rec = variant_a(5);
+    if (r.ok) { _zag_println(r.p); } else { _zag_println("none"); }
+    let r2: Rec = variant_a(0);
+    if (r2.ok) { _zag_println(r2.p); } else { _zag_println("none2"); }
+    return 0;
+}

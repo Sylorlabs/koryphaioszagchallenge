@@ -1,0 +1,71 @@
+// backend/routes_memory.zag — three-tier markdown memory docs.
+//
+// Tiers: universal, project, session (per sessionId). Each is a single raw
+// markdown file under <data_dir>/memory/. Same read-modify-write-atomic
+// approach as store.zag (util_read_or_empty / util_write_atomic), just
+// without the JSON-array bookkeeping since each doc is one whole file.
+@import("app.zag")
+
+fn memory_dir(app: *AppState) []u8 {
+    return _zag_str_concat(app.*.data_dir, "/memory");
+}
+
+fn memory_universal_path(app: *AppState) []u8 {
+    return _zag_str_concat(memory_dir(app), "/universal.md");
+}
+
+fn memory_project_path(app: *AppState) []u8 {
+    return _zag_str_concat(memory_dir(app), "/project.md");
+}
+
+fn memory_session_path(app: *AppState, sid: []u8) []u8 {
+    return _zag_str_concat(_zag_str_concat(memory_dir(app), "/session-"), _zag_str_concat(sid, ".md"));
+}
+
+// GET → {"ok":true,"data":{"content":"<md>"}}; PUT {"content"} → {"ok":true}.
+fn memory_tier_handle(srv: *HttpServer, conn: *Conn, req: *Request, path: []u8) bool {
+    let method: []u8 = req.*.method;
+    if (str_eq(method, "GET")) {
+        let content: []u8 = util_read_or_empty(path);
+        let sb: StrBuf = sb_make();
+        sb_app(&sb, "{\"content\":\"");
+        sb_app(&sb, str_escape_json(content));
+        sb_app(&sb, "\"}");
+        http_send_json(srv, conn, 200, ok_data(sb_slice(&sb)));
+        return true;
+    }
+    if (str_eq(method, "PUT")) {
+        let body: ?*JNode = json_parse(req.*.body);
+        let content: []u8 = json_str(json_get(body, "content"));
+        util_write_atomic(path, content);
+        http_send_json(srv, conn, 200, "{\"ok\":true}");
+        return true;
+    }
+    http_send_json(srv, conn, 404, err_body("Not Found"));
+    return true;
+}
+
+fn routes_memory(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) bool {
+    let path: []u8 = req.*.path;
+    if (!str_starts_with(path, "/api/memory/")) { return false; }
+
+    util_mkdir(memory_dir(app));
+
+    if (str_eq(path, "/api/memory/universal")) {
+        return memory_tier_handle(srv, conn, req, memory_universal_path(app));
+    }
+    if (str_eq(path, "/api/memory/project")) {
+        return memory_tier_handle(srv, conn, req, memory_project_path(app));
+    }
+    if (str_starts_with(path, "/api/memory/session/")) {
+        let sid: []u8 = path_param(path, "/api/memory/session/");
+        if (sid.len == 0) {
+            http_send_json(srv, conn, 404, err_body("Not Found"));
+            return true;
+        }
+        return memory_tier_handle(srv, conn, req, memory_session_path(app, sid));
+    }
+
+    http_send_json(srv, conn, 404, err_body("Not Found"));
+    return true;
+}

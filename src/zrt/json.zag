@@ -1,0 +1,580 @@
+// src/zrt/json.zag — JSON parser + writer.
+//
+// JNode is a tagged union (recursive via pointers). Numbers store both the
+// original source text (for lossless round-tripping) and parsed f64/i64
+// values with an `is_int` flag, per project convention. Objects are modeled
+// as an ordered list of {key, val} entries (not a hash map) to preserve
+// insertion order on write and keep this module's dependency surface small
+// (only str.zag / list.zag / rt.zag).
+//
+// All public entry points are prefixed `json_` to stay collision-free in
+// the shared plain-import namespace (str.zag, list.zag, rt.zag get merged
+// in transitively via the diamond import below).
+
+@import("str.zag")
+
+// ── value representation ──────────────────────────────────────────────────────
+
+struct JEntry {
+    key: []u8,
+    val: *JNode,
+}
+
+struct JNum {
+    raw:     []u8,   // original source slice, "" if not parsed from source
+    has_raw: bool,
+    f:       f64,
+    i:       i64,
+    is_int:  bool,
+}
+
+union JNode {
+    null_: bool,
+    bool_: bool,
+    num:   JNum,
+    str:   []u8,
+    arr:   ArrayList[*JNode],
+    obj:   ArrayList[JEntry],
+}
+
+// ── parser state ──────────────────────────────────────────────────────────────
+
+struct JParser {
+    src: []u8,
+    pos: i32,
+    err: bool,
+}
+
+fn json_eof(p: *JParser) bool {
+    return p.*.pos >= p.*.src.len;
+}
+
+fn json_cur(p: *JParser) u8 {
+    if (json_eof(p)) { return 0; }
+    return p.*.src[p.*.pos];
+}
+
+fn json_adv(p: *JParser) void {
+    p.*.pos = p.*.pos + 1;
+}
+
+fn json_fail(p: *JParser) void {
+    p.*.err = true;
+}
+
+fn json_skip_ws(p: *JParser) void {
+    let go: bool = true;
+    while (go && json_eof(p) == false) {
+        let c: u8 = json_cur(p);
+        if (c == 32 || c == 9 || c == 10 || c == 13) {
+            json_adv(p);
+        } else {
+            go = false;
+        }
+    }
+}
+
+fn json_eat_keyword(p: *JParser, kw: []u8) bool {
+    let start: i32 = p.*.pos;
+    let i: i32 = 0;
+    while (i < kw.len) {
+        if (json_eof(p) || json_cur(p) != kw[i]) {
+            p.*.pos = start;
+            return false;
+        }
+        json_adv(p);
+        i = i + 1;
+    }
+    return true;
+}
+
+// ── string literal parsing (also used for object keys) ────────────────────────
+
+// Parse a `"..."` literal at the current position, unescaping it. On success
+// returns the unescaped bytes; on failure sets p.err and returns "".
+fn json_parse_string_raw(p: *JParser) []u8 {
+    if (json_cur(p) != '"') { json_fail(p); return ""; }
+    json_adv(p);
+    let out: ArrayList[u8] = make[u8](16);
+    let go: bool = true;
+    let closed: bool = false;
+    while (go && json_eof(p) == false) {
+        let c: u8 = json_cur(p);
+        if (c == '"') {
+            json_adv(p);
+            closed = true;
+            go = false;
+        } else if (c == '\\') {
+            json_adv(p);
+            if (json_eof(p)) { json_fail(p); go = false; }
+            else {
+                let e: u8 = json_cur(p);
+                if (e == '"') { push[u8](&out, '"' as u8); json_adv(p); }
+                else if (e == '\\') { push[u8](&out, '\\' as u8); json_adv(p); }
+                else if (e == '/') { push[u8](&out, '/' as u8); json_adv(p); }
+                else if (e == 'b') { push[u8](&out, 8); json_adv(p); }
+                else if (e == 'f') { push[u8](&out, 12); json_adv(p); }
+                else if (e == 'n') { push[u8](&out, '\n' as u8); json_adv(p); }
+                else if (e == 'r') { push[u8](&out, '\r' as u8); json_adv(p); }
+                else if (e == 't') { push[u8](&out, '\t' as u8); json_adv(p); }
+                else if (e == 'u') {
+                    json_adv(p);
+                    let cp1: i32 = json_parse_hex4(p);
+                    if (p.*.err) { go = false; }
+                    else {
+                        let cp: i32 = cp1;
+                        // surrogate pair?
+                        if (cp1 >= 55296 && cp1 <= 56319) {
+                            if (json_cur(p) == '\\' ) {
+                                let save: i32 = p.*.pos;
+                                json_adv(p);
+                                if (json_cur(p) == 'u') {
+                                    json_adv(p);
+                                    let cp2: i32 = json_parse_hex4(p);
+                                    if (p.*.err == false && cp2 >= 56320 && cp2 <= 57343) {
+                                        cp = 65536 + (cp1 - 55296) * 1024 + (cp2 - 56320);
+                                    } else {
+                                        p.*.err = false;
+                                        p.*.pos = save;
+                                    }
+                                } else {
+                                    p.*.pos = save;
+                                }
+                            }
+                        }
+                        str_utf8_push(&out, cp);
+                    }
+                }
+                else { json_fail(p); go = false; }
+            }
+        } else {
+            push[u8](&out, c);
+            json_adv(p);
+        }
+    }
+    if (closed == false) { json_fail(p); return ""; }
+    return out.data[0..out.len];
+}
+
+// Parse exactly 4 hex digits starting at the current position into an i32.
+// Sets p.err on malformed input.
+fn json_parse_hex4(p: *JParser) i32 {
+    let v: i32 = 0;
+    let i: i32 = 0;
+    while (i < 4) {
+        if (json_eof(p)) { json_fail(p); return 0; }
+        let c: u8 = json_cur(p);
+        let hv: i32 = str_hex_val(c);
+        if (hv < 0) { json_fail(p); return 0; }
+        v = v * 16 + hv;
+        json_adv(p);
+        i = i + 1;
+    }
+    return v;
+}
+
+// ── number parsing ────────────────────────────────────────────────────────────
+
+fn json_parse_number(p: *JParser) *JNode {
+    let start: i32 = p.*.pos;
+    let neg: bool = false;
+    if (json_cur(p) == '-') { neg = true; json_adv(p); }
+    let int_part: i64 = 0;
+    let had_digit: bool = false;
+    while (json_eof(p) == false && str_is_digit(json_cur(p))) {
+        int_part = int_part * 10 + (str_digit_val(json_cur(p)) as i64);
+        had_digit = true;
+        json_adv(p);
+    }
+    if (had_digit == false) { json_fail(p); return new(JNode{ .null_ = true }); }
+    let is_int: bool = true;
+    if (json_cur(p) == '.') {
+        is_int = false;
+        json_adv(p);
+        if (json_eof(p) == false && str_is_digit(json_cur(p)) == false) { json_fail(p); }
+        while (json_eof(p) == false && str_is_digit(json_cur(p))) { json_adv(p); }
+    }
+    if (json_cur(p) == 'e' || json_cur(p) == 'E') {
+        is_int = false;
+        json_adv(p);
+        if (json_cur(p) == '+' || json_cur(p) == '-') { json_adv(p); }
+        if (json_eof(p) == false && str_is_digit(json_cur(p)) == false) { json_fail(p); }
+        while (json_eof(p) == false && str_is_digit(json_cur(p))) { json_adv(p); }
+    }
+    let raw: []u8 = p.*.src[start..p.*.pos];
+    let fval: f64 = json_parse_f64(raw);
+    let ival: i64 = int_part;
+    if (neg) { ival = 0 - ival; }
+    if (is_int == false) { ival = fval as i64; }
+    return new(JNode{ .num = JNum{ .raw = raw, .has_raw = true, .f = fval, .i = ival, .is_int = is_int } });
+}
+
+// Manual []u8 -> f64 parser (handles sign, fraction, exponent).
+fn json_parse_f64(raw: []u8) f64 {
+    let i: i32 = 0;
+    let neg: bool = false;
+    if (i < raw.len && raw[i] == '-') { neg = true; i = i + 1; }
+    let acc: f64 = 0.0;
+    while (i < raw.len && str_is_digit(raw[i])) {
+        acc = acc * 10.0 + (str_digit_val(raw[i]) as f64);
+        i = i + 1;
+    }
+    if (i < raw.len && raw[i] == '.') {
+        i = i + 1;
+        let scale: f64 = 1.0;
+        while (i < raw.len && str_is_digit(raw[i])) {
+            scale = scale / 10.0;
+            acc = acc + (str_digit_val(raw[i]) as f64) * scale;
+            i = i + 1;
+        }
+    }
+    let exp: i64 = 0;
+    let exp_neg: bool = false;
+    if (i < raw.len && (raw[i] == 'e' || raw[i] == 'E')) {
+        i = i + 1;
+        if (i < raw.len && (raw[i] == '+' || raw[i] == '-')) {
+            if (raw[i] == '-') { exp_neg = true; }
+            i = i + 1;
+        }
+        while (i < raw.len && str_is_digit(raw[i])) {
+            exp = exp * 10 + (str_digit_val(raw[i]) as i64);
+            i = i + 1;
+        }
+    }
+    let k: i64 = 0;
+    while (k < exp) {
+        if (exp_neg) { acc = acc / 10.0; } else { acc = acc * 10.0; }
+        k = k + 1;
+    }
+    if (neg) { acc = 0.0 - acc; }
+    return acc;
+}
+
+// ── array / object parsing ─────────────────────────────────────────────────────
+
+fn json_parse_array(p: *JParser) *JNode {
+    json_adv(p);   // [
+    let items: ArrayList[*JNode] = make[*JNode](4);
+    json_skip_ws(p);
+    if (json_cur(p) == ']') {
+        json_adv(p);
+        return new(JNode{ .arr = items });
+    }
+    let go: bool = true;
+    while (go) {
+        json_skip_ws(p);
+        let v: *JNode = json_parse_value(p);
+        if (p.*.err) { go = false; }
+        else {
+            push[*JNode](&items, v);
+            json_skip_ws(p);
+            let c: u8 = json_cur(p);
+            if (c == ',') { json_adv(p); }
+            else if (c == ']') { json_adv(p); go = false; }
+            else { json_fail(p); go = false; }
+        }
+    }
+    return new(JNode{ .arr = items });
+}
+
+fn json_parse_object(p: *JParser) *JNode {
+    json_adv(p);   // {
+    let entries: ArrayList[JEntry] = make[JEntry](4);
+    json_skip_ws(p);
+    if (json_cur(p) == '}') {
+        json_adv(p);
+        return new(JNode{ .obj = entries });
+    }
+    let go: bool = true;
+    while (go) {
+        json_skip_ws(p);
+        if (json_cur(p) != '"') { json_fail(p); go = false; }
+        else {
+            let key: []u8 = json_parse_string_raw(p);
+            if (p.*.err) { go = false; }
+            else {
+                json_skip_ws(p);
+                if (json_cur(p) != ':') { json_fail(p); go = false; }
+                else {
+                    json_adv(p);
+                    json_skip_ws(p);
+                    let v: *JNode = json_parse_value(p);
+                    if (p.*.err) { go = false; }
+                    else {
+                        push[JEntry](&entries, JEntry{ .key = key, .val = v });
+                        json_skip_ws(p);
+                        let c: u8 = json_cur(p);
+                        if (c == ',') { json_adv(p); }
+                        else if (c == '}') { json_adv(p); go = false; }
+                        else { json_fail(p); go = false; }
+                    }
+                }
+            }
+        }
+    }
+    return new(JNode{ .obj = entries });
+}
+
+// ── value dispatch ─────────────────────────────────────────────────────────────
+
+fn json_parse_value(p: *JParser) *JNode {
+    json_skip_ws(p);
+    if (json_eof(p)) { json_fail(p); return new(JNode{ .null_ = true }); }
+    let c: u8 = json_cur(p);
+    if (c == 'n') {
+        if (json_eat_keyword(p, "null")) { return new(JNode{ .null_ = true }); }
+        json_fail(p); return new(JNode{ .null_ = true });
+    }
+    if (c == 't') {
+        if (json_eat_keyword(p, "true")) { return new(JNode{ .bool_ = true }); }
+        json_fail(p); return new(JNode{ .null_ = true });
+    }
+    if (c == 'f') {
+        if (json_eat_keyword(p, "false")) { return new(JNode{ .bool_ = false }); }
+        json_fail(p); return new(JNode{ .null_ = true });
+    }
+    if (c == '"') {
+        let s: []u8 = json_parse_string_raw(p);
+        return new(JNode{ .str = s });
+    }
+    if (c == '[') { return json_parse_array(p); }
+    if (c == '{') { return json_parse_object(p); }
+    if (c == '-' || str_is_digit(c)) { return json_parse_number(p); }
+    json_fail(p);
+    return new(JNode{ .null_ = true });
+}
+
+// Parse `src` as a single JSON value. Returns null on any syntax error.
+fn json_parse(src: []u8) ?*JNode {
+    let p: JParser = JParser{ .src = src, .pos = 0, .err = false };
+    let pp: *JParser = &p;
+    json_skip_ws(pp);
+    let v: *JNode = json_parse_value(pp);
+    if (pp.*.err) { return null; }
+    json_skip_ws(pp);
+    if (json_eof(pp) == false) { return null; }   // trailing garbage
+    return v;
+}
+
+// ── accessors ─────────────────────────────────────────────────────────────────
+
+// Look up `key` in an object node. Works on ?*JNode so lookups chain
+// naturally: json_get(json_get(root, "a"), "b").
+fn json_get(n: ?*JNode, key: []u8) ?*JNode {
+    if (n) |v| {
+        switch (v.*) {
+            .obj => |entries| {
+                let i: i32 = 0;
+                while (i < len[JEntry](entries)) {
+                    let e: JEntry = get[JEntry](entries, i);
+                    if (@strEq(e.key, key)) { return e.val; }
+                    i = i + 1;
+                }
+                return null;
+            }
+            else => { return null; }
+        }
+    }
+    return null;
+}
+
+fn json_str(n: ?*JNode) []u8 {
+    if (n) |v| {
+        switch (v.*) {
+            .str => |s| { return s; }
+            else => { return ""; }
+        }
+    }
+    return "";
+}
+
+fn json_int(n: ?*JNode) i64 {
+    if (n) |v| {
+        switch (v.*) {
+            .num => |nv| {
+                if (nv.is_int) { return nv.i; }
+                return nv.f as i64;
+            }
+            .bool_ => |b| { if (b) { return 1; } return 0; }
+            else => { return 0; }
+        }
+    }
+    return 0;
+}
+
+fn json_float(n: ?*JNode) f64 {
+    if (n) |v| {
+        switch (v.*) {
+            .num => |nv| { return nv.f; }
+            else => { return 0.0; }
+        }
+    }
+    return 0.0;
+}
+
+fn json_bool(n: ?*JNode) bool {
+    if (n) |v| {
+        switch (v.*) {
+            .bool_ => |b| { return b; }
+            else => { return false; }
+        }
+    }
+    return false;
+}
+
+fn json_is_null(n: ?*JNode) bool {
+    if (n) |v| {
+        switch (v.*) {
+            .null_ => |_| { return true; }
+            else => { return false; }
+        }
+    }
+    return true;
+}
+
+fn json_arr_len(n: ?*JNode) i32 {
+    if (n) |v| {
+        switch (v.*) {
+            .arr => |items| { return len[*JNode](items); }
+            else => { return 0; }
+        }
+    }
+    return 0;
+}
+
+fn json_arr_at(n: ?*JNode, i: i32) ?*JNode {
+    if (n) |v| {
+        switch (v.*) {
+            .arr => |items| {
+                if (i < 0 || i >= len[*JNode](items)) { return null; }
+                return get[*JNode](items, i);
+            }
+            else => { return null; }
+        }
+    }
+    return null;
+}
+
+fn json_obj_len(n: ?*JNode) i32 {
+    if (n) |v| {
+        switch (v.*) {
+            .obj => |entries| { return len[JEntry](entries); }
+            else => { return 0; }
+        }
+    }
+    return 0;
+}
+
+// key at index `i` of an object (for iteration).
+fn json_obj_key_at(n: ?*JNode, i: i32) []u8 {
+    if (n) |v| {
+        switch (v.*) {
+            .obj => |entries| {
+                if (i < 0 || i >= len[JEntry](entries)) { return ""; }
+                return get[JEntry](entries, i).key;
+            }
+            else => { return ""; }
+        }
+    }
+    return "";
+}
+
+fn json_obj_val_at(n: ?*JNode, i: i32) ?*JNode {
+    if (n) |v| {
+        switch (v.*) {
+            .obj => |entries| {
+                if (i < 0 || i >= len[JEntry](entries)) { return null; }
+                return get[JEntry](entries, i).val;
+            }
+            else => { return null; }
+        }
+    }
+    return null;
+}
+
+// ── writer ─────────────────────────────────────────────────────────────────────
+
+fn json_write_string(sb: *StrBuf, s: []u8) void {
+    sb_ch(sb, '"' as u8);
+    sb_app(sb, str_escape_json(s));
+    sb_ch(sb, '"' as u8);
+}
+
+// Format an f64 that has no preserved raw source text (e.g. a
+// programmatically constructed node). Trims trailing fractional zeros.
+fn json_format_f64(sb: *StrBuf, v: f64) void {
+    let x: f64 = v;
+    if (x < 0.0) { sb_ch(sb, '-' as u8); x = 0.0 - x; }
+    let ip: i64 = x as i64;
+    sb_int(sb, ip);
+    let frac: f64 = x - (ip as f64);
+    if (frac > 0.0000000001) {
+        sb_ch(sb, '.' as u8);
+        let f: f64 = frac;
+        let i: i32 = 0;
+        while (i < 9) {
+            f = f * 10.0;
+            let d: i64 = f as i64;
+            sb_ch(sb, (('0' as i64) + d) as u8);
+            f = f - (d as f64);
+            i = i + 1;
+        }
+        // trim trailing zeros, then a trailing '.' if nothing follows it
+        let trimming: bool = true;
+        while (trimming) {
+            let last: u8 = sb_pop(sb);
+            if (last != '0') {
+                if (last != '.') { sb_ch(sb, last); }
+                trimming = false;
+            }
+        }
+    }
+}
+
+fn json_write_num(sb: *StrBuf, nv: JNum) void {
+    if (nv.has_raw) {
+        sb_app(sb, nv.raw);
+    } else if (nv.is_int) {
+        sb_int(sb, nv.i);
+    } else {
+        json_format_f64(sb, nv.f);
+    }
+}
+
+fn json_write_node(sb: *StrBuf, n: *JNode) void {
+    switch (n.*) {
+        .null_ => |_| { sb_app(sb, "null"); }
+        .bool_ => |b| { if (b) { sb_app(sb, "true"); } else { sb_app(sb, "false"); } }
+        .num   => |nv| { json_write_num(sb, nv); }
+        .str   => |s| { json_write_string(sb, s); }
+        .arr   => |items| {
+            sb_ch(sb, '[' as u8);
+            let i: i32 = 0;
+            while (i < len[*JNode](items)) {
+                if (i > 0) { sb_ch(sb, ',' as u8); }
+                json_write_node(sb, get[*JNode](items, i));
+                i = i + 1;
+            }
+            sb_ch(sb, ']' as u8);
+        }
+        .obj => |entries| {
+            sb_ch(sb, '{' as u8);
+            let i: i32 = 0;
+            while (i < len[JEntry](entries)) {
+                if (i > 0) { sb_ch(sb, ',' as u8); }
+                let e: JEntry = get[JEntry](entries, i);
+                json_write_string(sb, e.key);
+                sb_ch(sb, ':' as u8);
+                json_write_node(sb, e.val);
+                i = i + 1;
+            }
+            sb_ch(sb, '}' as u8);
+        }
+    }
+}
+
+fn json_write(n: *JNode) []u8 {
+    let sb: StrBuf = sb_make();
+    json_write_node(&sb, n);
+    return sb_slice(&sb);
+}

@@ -1,0 +1,3350 @@
+@import("../zagstd/rt.zag")
+
+fn helper0(x: i32) i32 {
+    let a: i32 = x + 0;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper1(x: i32) i32 {
+    let a: i32 = x + 1;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper2(x: i32) i32 {
+    let a: i32 = x + 2;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper3(x: i32) i32 {
+    let a: i32 = x + 3;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper4(x: i32) i32 {
+    let a: i32 = x + 4;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper5(x: i32) i32 {
+    let a: i32 = x + 5;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper6(x: i32) i32 {
+    let a: i32 = x + 6;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper7(x: i32) i32 {
+    let a: i32 = x + 7;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper8(x: i32) i32 {
+    let a: i32 = x + 8;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper9(x: i32) i32 {
+    let a: i32 = x + 9;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper10(x: i32) i32 {
+    let a: i32 = x + 10;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper11(x: i32) i32 {
+    let a: i32 = x + 11;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper12(x: i32) i32 {
+    let a: i32 = x + 12;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper13(x: i32) i32 {
+    let a: i32 = x + 13;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper14(x: i32) i32 {
+    let a: i32 = x + 14;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper15(x: i32) i32 {
+    let a: i32 = x + 15;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper16(x: i32) i32 {
+    let a: i32 = x + 16;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper17(x: i32) i32 {
+    let a: i32 = x + 17;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper18(x: i32) i32 {
+    let a: i32 = x + 18;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper19(x: i32) i32 {
+    let a: i32 = x + 19;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper20(x: i32) i32 {
+    let a: i32 = x + 20;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper21(x: i32) i32 {
+    let a: i32 = x + 21;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper22(x: i32) i32 {
+    let a: i32 = x + 22;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper23(x: i32) i32 {
+    let a: i32 = x + 23;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper24(x: i32) i32 {
+    let a: i32 = x + 24;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper25(x: i32) i32 {
+    let a: i32 = x + 25;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper26(x: i32) i32 {
+    let a: i32 = x + 26;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper27(x: i32) i32 {
+    let a: i32 = x + 27;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper28(x: i32) i32 {
+    let a: i32 = x + 28;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper29(x: i32) i32 {
+    let a: i32 = x + 29;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper30(x: i32) i32 {
+    let a: i32 = x + 30;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper31(x: i32) i32 {
+    let a: i32 = x + 31;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper32(x: i32) i32 {
+    let a: i32 = x + 32;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper33(x: i32) i32 {
+    let a: i32 = x + 33;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper34(x: i32) i32 {
+    let a: i32 = x + 34;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper35(x: i32) i32 {
+    let a: i32 = x + 35;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper36(x: i32) i32 {
+    let a: i32 = x + 36;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper37(x: i32) i32 {
+    let a: i32 = x + 37;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper38(x: i32) i32 {
+    let a: i32 = x + 38;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper39(x: i32) i32 {
+    let a: i32 = x + 39;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper40(x: i32) i32 {
+    let a: i32 = x + 40;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper41(x: i32) i32 {
+    let a: i32 = x + 41;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper42(x: i32) i32 {
+    let a: i32 = x + 42;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper43(x: i32) i32 {
+    let a: i32 = x + 43;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper44(x: i32) i32 {
+    let a: i32 = x + 44;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper45(x: i32) i32 {
+    let a: i32 = x + 45;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper46(x: i32) i32 {
+    let a: i32 = x + 46;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper47(x: i32) i32 {
+    let a: i32 = x + 47;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper48(x: i32) i32 {
+    let a: i32 = x + 48;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper49(x: i32) i32 {
+    let a: i32 = x + 49;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper50(x: i32) i32 {
+    let a: i32 = x + 50;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper51(x: i32) i32 {
+    let a: i32 = x + 51;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper52(x: i32) i32 {
+    let a: i32 = x + 52;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper53(x: i32) i32 {
+    let a: i32 = x + 53;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper54(x: i32) i32 {
+    let a: i32 = x + 54;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper55(x: i32) i32 {
+    let a: i32 = x + 55;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper56(x: i32) i32 {
+    let a: i32 = x + 56;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper57(x: i32) i32 {
+    let a: i32 = x + 57;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper58(x: i32) i32 {
+    let a: i32 = x + 58;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper59(x: i32) i32 {
+    let a: i32 = x + 59;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper60(x: i32) i32 {
+    let a: i32 = x + 60;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper61(x: i32) i32 {
+    let a: i32 = x + 61;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper62(x: i32) i32 {
+    let a: i32 = x + 62;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper63(x: i32) i32 {
+    let a: i32 = x + 63;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper64(x: i32) i32 {
+    let a: i32 = x + 64;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper65(x: i32) i32 {
+    let a: i32 = x + 65;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper66(x: i32) i32 {
+    let a: i32 = x + 66;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper67(x: i32) i32 {
+    let a: i32 = x + 67;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper68(x: i32) i32 {
+    let a: i32 = x + 68;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper69(x: i32) i32 {
+    let a: i32 = x + 69;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper70(x: i32) i32 {
+    let a: i32 = x + 70;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper71(x: i32) i32 {
+    let a: i32 = x + 71;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper72(x: i32) i32 {
+    let a: i32 = x + 72;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper73(x: i32) i32 {
+    let a: i32 = x + 73;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper74(x: i32) i32 {
+    let a: i32 = x + 74;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper75(x: i32) i32 {
+    let a: i32 = x + 75;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper76(x: i32) i32 {
+    let a: i32 = x + 76;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper77(x: i32) i32 {
+    let a: i32 = x + 77;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper78(x: i32) i32 {
+    let a: i32 = x + 78;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper79(x: i32) i32 {
+    let a: i32 = x + 79;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper80(x: i32) i32 {
+    let a: i32 = x + 80;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper81(x: i32) i32 {
+    let a: i32 = x + 81;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper82(x: i32) i32 {
+    let a: i32 = x + 82;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper83(x: i32) i32 {
+    let a: i32 = x + 83;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper84(x: i32) i32 {
+    let a: i32 = x + 84;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper85(x: i32) i32 {
+    let a: i32 = x + 85;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper86(x: i32) i32 {
+    let a: i32 = x + 86;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper87(x: i32) i32 {
+    let a: i32 = x + 87;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper88(x: i32) i32 {
+    let a: i32 = x + 88;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper89(x: i32) i32 {
+    let a: i32 = x + 89;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper90(x: i32) i32 {
+    let a: i32 = x + 90;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper91(x: i32) i32 {
+    let a: i32 = x + 91;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper92(x: i32) i32 {
+    let a: i32 = x + 92;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper93(x: i32) i32 {
+    let a: i32 = x + 93;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper94(x: i32) i32 {
+    let a: i32 = x + 94;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper95(x: i32) i32 {
+    let a: i32 = x + 95;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper96(x: i32) i32 {
+    let a: i32 = x + 96;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper97(x: i32) i32 {
+    let a: i32 = x + 97;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper98(x: i32) i32 {
+    let a: i32 = x + 98;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper99(x: i32) i32 {
+    let a: i32 = x + 99;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper100(x: i32) i32 {
+    let a: i32 = x + 100;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper101(x: i32) i32 {
+    let a: i32 = x + 101;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper102(x: i32) i32 {
+    let a: i32 = x + 102;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper103(x: i32) i32 {
+    let a: i32 = x + 103;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper104(x: i32) i32 {
+    let a: i32 = x + 104;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper105(x: i32) i32 {
+    let a: i32 = x + 105;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper106(x: i32) i32 {
+    let a: i32 = x + 106;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper107(x: i32) i32 {
+    let a: i32 = x + 107;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper108(x: i32) i32 {
+    let a: i32 = x + 108;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper109(x: i32) i32 {
+    let a: i32 = x + 109;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper110(x: i32) i32 {
+    let a: i32 = x + 110;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper111(x: i32) i32 {
+    let a: i32 = x + 111;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper112(x: i32) i32 {
+    let a: i32 = x + 112;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper113(x: i32) i32 {
+    let a: i32 = x + 113;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper114(x: i32) i32 {
+    let a: i32 = x + 114;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper115(x: i32) i32 {
+    let a: i32 = x + 115;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper116(x: i32) i32 {
+    let a: i32 = x + 116;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper117(x: i32) i32 {
+    let a: i32 = x + 117;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper118(x: i32) i32 {
+    let a: i32 = x + 118;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper119(x: i32) i32 {
+    let a: i32 = x + 119;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper120(x: i32) i32 {
+    let a: i32 = x + 120;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper121(x: i32) i32 {
+    let a: i32 = x + 121;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper122(x: i32) i32 {
+    let a: i32 = x + 122;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper123(x: i32) i32 {
+    let a: i32 = x + 123;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper124(x: i32) i32 {
+    let a: i32 = x + 124;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper125(x: i32) i32 {
+    let a: i32 = x + 125;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper126(x: i32) i32 {
+    let a: i32 = x + 126;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper127(x: i32) i32 {
+    let a: i32 = x + 127;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper128(x: i32) i32 {
+    let a: i32 = x + 128;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper129(x: i32) i32 {
+    let a: i32 = x + 129;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper130(x: i32) i32 {
+    let a: i32 = x + 130;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper131(x: i32) i32 {
+    let a: i32 = x + 131;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper132(x: i32) i32 {
+    let a: i32 = x + 132;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper133(x: i32) i32 {
+    let a: i32 = x + 133;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper134(x: i32) i32 {
+    let a: i32 = x + 134;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper135(x: i32) i32 {
+    let a: i32 = x + 135;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper136(x: i32) i32 {
+    let a: i32 = x + 136;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper137(x: i32) i32 {
+    let a: i32 = x + 137;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper138(x: i32) i32 {
+    let a: i32 = x + 138;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper139(x: i32) i32 {
+    let a: i32 = x + 139;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper140(x: i32) i32 {
+    let a: i32 = x + 140;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper141(x: i32) i32 {
+    let a: i32 = x + 141;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper142(x: i32) i32 {
+    let a: i32 = x + 142;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper143(x: i32) i32 {
+    let a: i32 = x + 143;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper144(x: i32) i32 {
+    let a: i32 = x + 144;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper145(x: i32) i32 {
+    let a: i32 = x + 145;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper146(x: i32) i32 {
+    let a: i32 = x + 146;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper147(x: i32) i32 {
+    let a: i32 = x + 147;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper148(x: i32) i32 {
+    let a: i32 = x + 148;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper149(x: i32) i32 {
+    let a: i32 = x + 149;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper150(x: i32) i32 {
+    let a: i32 = x + 150;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper151(x: i32) i32 {
+    let a: i32 = x + 151;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper152(x: i32) i32 {
+    let a: i32 = x + 152;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper153(x: i32) i32 {
+    let a: i32 = x + 153;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper154(x: i32) i32 {
+    let a: i32 = x + 154;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper155(x: i32) i32 {
+    let a: i32 = x + 155;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper156(x: i32) i32 {
+    let a: i32 = x + 156;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper157(x: i32) i32 {
+    let a: i32 = x + 157;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper158(x: i32) i32 {
+    let a: i32 = x + 158;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper159(x: i32) i32 {
+    let a: i32 = x + 159;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper160(x: i32) i32 {
+    let a: i32 = x + 160;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper161(x: i32) i32 {
+    let a: i32 = x + 161;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper162(x: i32) i32 {
+    let a: i32 = x + 162;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper163(x: i32) i32 {
+    let a: i32 = x + 163;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper164(x: i32) i32 {
+    let a: i32 = x + 164;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper165(x: i32) i32 {
+    let a: i32 = x + 165;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper166(x: i32) i32 {
+    let a: i32 = x + 166;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper167(x: i32) i32 {
+    let a: i32 = x + 167;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper168(x: i32) i32 {
+    let a: i32 = x + 168;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper169(x: i32) i32 {
+    let a: i32 = x + 169;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper170(x: i32) i32 {
+    let a: i32 = x + 170;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper171(x: i32) i32 {
+    let a: i32 = x + 171;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper172(x: i32) i32 {
+    let a: i32 = x + 172;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper173(x: i32) i32 {
+    let a: i32 = x + 173;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper174(x: i32) i32 {
+    let a: i32 = x + 174;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper175(x: i32) i32 {
+    let a: i32 = x + 175;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper176(x: i32) i32 {
+    let a: i32 = x + 176;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper177(x: i32) i32 {
+    let a: i32 = x + 177;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper178(x: i32) i32 {
+    let a: i32 = x + 178;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper179(x: i32) i32 {
+    let a: i32 = x + 179;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper180(x: i32) i32 {
+    let a: i32 = x + 180;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper181(x: i32) i32 {
+    let a: i32 = x + 181;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper182(x: i32) i32 {
+    let a: i32 = x + 182;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper183(x: i32) i32 {
+    let a: i32 = x + 183;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper184(x: i32) i32 {
+    let a: i32 = x + 184;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper185(x: i32) i32 {
+    let a: i32 = x + 185;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper186(x: i32) i32 {
+    let a: i32 = x + 186;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper187(x: i32) i32 {
+    let a: i32 = x + 187;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper188(x: i32) i32 {
+    let a: i32 = x + 188;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper189(x: i32) i32 {
+    let a: i32 = x + 189;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper190(x: i32) i32 {
+    let a: i32 = x + 190;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper191(x: i32) i32 {
+    let a: i32 = x + 191;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper192(x: i32) i32 {
+    let a: i32 = x + 192;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper193(x: i32) i32 {
+    let a: i32 = x + 193;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper194(x: i32) i32 {
+    let a: i32 = x + 194;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper195(x: i32) i32 {
+    let a: i32 = x + 195;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper196(x: i32) i32 {
+    let a: i32 = x + 196;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper197(x: i32) i32 {
+    let a: i32 = x + 197;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper198(x: i32) i32 {
+    let a: i32 = x + 198;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper199(x: i32) i32 {
+    let a: i32 = x + 199;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper200(x: i32) i32 {
+    let a: i32 = x + 200;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper201(x: i32) i32 {
+    let a: i32 = x + 201;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper202(x: i32) i32 {
+    let a: i32 = x + 202;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper203(x: i32) i32 {
+    let a: i32 = x + 203;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper204(x: i32) i32 {
+    let a: i32 = x + 204;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper205(x: i32) i32 {
+    let a: i32 = x + 205;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper206(x: i32) i32 {
+    let a: i32 = x + 206;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper207(x: i32) i32 {
+    let a: i32 = x + 207;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper208(x: i32) i32 {
+    let a: i32 = x + 208;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper209(x: i32) i32 {
+    let a: i32 = x + 209;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper210(x: i32) i32 {
+    let a: i32 = x + 210;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper211(x: i32) i32 {
+    let a: i32 = x + 211;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper212(x: i32) i32 {
+    let a: i32 = x + 212;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper213(x: i32) i32 {
+    let a: i32 = x + 213;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper214(x: i32) i32 {
+    let a: i32 = x + 214;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper215(x: i32) i32 {
+    let a: i32 = x + 215;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper216(x: i32) i32 {
+    let a: i32 = x + 216;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper217(x: i32) i32 {
+    let a: i32 = x + 217;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper218(x: i32) i32 {
+    let a: i32 = x + 218;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper219(x: i32) i32 {
+    let a: i32 = x + 219;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper220(x: i32) i32 {
+    let a: i32 = x + 220;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper221(x: i32) i32 {
+    let a: i32 = x + 221;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper222(x: i32) i32 {
+    let a: i32 = x + 222;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper223(x: i32) i32 {
+    let a: i32 = x + 223;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper224(x: i32) i32 {
+    let a: i32 = x + 224;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper225(x: i32) i32 {
+    let a: i32 = x + 225;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper226(x: i32) i32 {
+    let a: i32 = x + 226;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper227(x: i32) i32 {
+    let a: i32 = x + 227;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper228(x: i32) i32 {
+    let a: i32 = x + 228;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper229(x: i32) i32 {
+    let a: i32 = x + 229;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper230(x: i32) i32 {
+    let a: i32 = x + 230;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper231(x: i32) i32 {
+    let a: i32 = x + 231;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper232(x: i32) i32 {
+    let a: i32 = x + 232;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper233(x: i32) i32 {
+    let a: i32 = x + 233;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper234(x: i32) i32 {
+    let a: i32 = x + 234;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper235(x: i32) i32 {
+    let a: i32 = x + 235;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper236(x: i32) i32 {
+    let a: i32 = x + 236;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper237(x: i32) i32 {
+    let a: i32 = x + 237;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper238(x: i32) i32 {
+    let a: i32 = x + 238;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper239(x: i32) i32 {
+    let a: i32 = x + 239;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper240(x: i32) i32 {
+    let a: i32 = x + 240;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper241(x: i32) i32 {
+    let a: i32 = x + 241;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper242(x: i32) i32 {
+    let a: i32 = x + 242;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper243(x: i32) i32 {
+    let a: i32 = x + 243;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper244(x: i32) i32 {
+    let a: i32 = x + 244;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper245(x: i32) i32 {
+    let a: i32 = x + 245;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper246(x: i32) i32 {
+    let a: i32 = x + 246;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper247(x: i32) i32 {
+    let a: i32 = x + 247;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper248(x: i32) i32 {
+    let a: i32 = x + 248;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper249(x: i32) i32 {
+    let a: i32 = x + 249;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper250(x: i32) i32 {
+    let a: i32 = x + 250;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper251(x: i32) i32 {
+    let a: i32 = x + 251;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper252(x: i32) i32 {
+    let a: i32 = x + 252;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper253(x: i32) i32 {
+    let a: i32 = x + 253;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper254(x: i32) i32 {
+    let a: i32 = x + 254;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper255(x: i32) i32 {
+    let a: i32 = x + 255;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper256(x: i32) i32 {
+    let a: i32 = x + 256;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper257(x: i32) i32 {
+    let a: i32 = x + 257;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper258(x: i32) i32 {
+    let a: i32 = x + 258;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper259(x: i32) i32 {
+    let a: i32 = x + 259;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper260(x: i32) i32 {
+    let a: i32 = x + 260;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper261(x: i32) i32 {
+    let a: i32 = x + 261;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper262(x: i32) i32 {
+    let a: i32 = x + 262;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper263(x: i32) i32 {
+    let a: i32 = x + 263;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper264(x: i32) i32 {
+    let a: i32 = x + 264;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper265(x: i32) i32 {
+    let a: i32 = x + 265;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper266(x: i32) i32 {
+    let a: i32 = x + 266;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper267(x: i32) i32 {
+    let a: i32 = x + 267;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper268(x: i32) i32 {
+    let a: i32 = x + 268;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper269(x: i32) i32 {
+    let a: i32 = x + 269;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper270(x: i32) i32 {
+    let a: i32 = x + 270;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper271(x: i32) i32 {
+    let a: i32 = x + 271;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper272(x: i32) i32 {
+    let a: i32 = x + 272;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper273(x: i32) i32 {
+    let a: i32 = x + 273;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper274(x: i32) i32 {
+    let a: i32 = x + 274;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper275(x: i32) i32 {
+    let a: i32 = x + 275;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper276(x: i32) i32 {
+    let a: i32 = x + 276;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper277(x: i32) i32 {
+    let a: i32 = x + 277;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper278(x: i32) i32 {
+    let a: i32 = x + 278;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper279(x: i32) i32 {
+    let a: i32 = x + 279;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper280(x: i32) i32 {
+    let a: i32 = x + 280;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper281(x: i32) i32 {
+    let a: i32 = x + 281;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper282(x: i32) i32 {
+    let a: i32 = x + 282;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper283(x: i32) i32 {
+    let a: i32 = x + 283;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper284(x: i32) i32 {
+    let a: i32 = x + 284;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper285(x: i32) i32 {
+    let a: i32 = x + 285;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper286(x: i32) i32 {
+    let a: i32 = x + 286;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper287(x: i32) i32 {
+    let a: i32 = x + 287;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper288(x: i32) i32 {
+    let a: i32 = x + 288;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper289(x: i32) i32 {
+    let a: i32 = x + 289;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper290(x: i32) i32 {
+    let a: i32 = x + 290;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper291(x: i32) i32 {
+    let a: i32 = x + 291;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper292(x: i32) i32 {
+    let a: i32 = x + 292;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper293(x: i32) i32 {
+    let a: i32 = x + 293;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper294(x: i32) i32 {
+    let a: i32 = x + 294;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper295(x: i32) i32 {
+    let a: i32 = x + 295;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper296(x: i32) i32 {
+    let a: i32 = x + 296;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper297(x: i32) i32 {
+    let a: i32 = x + 297;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper298(x: i32) i32 {
+    let a: i32 = x + 298;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn helper299(x: i32) i32 {
+    let a: i32 = x + 299;
+    let b: i32 = a * 2;
+    let s: []u8 = _zag_i64_to_str(b as i64);
+    if (s.len > 100) { return 0; }
+    let j: i32 = 0;
+    let acc: i32 = 0;
+    while (j < 10) { acc = acc + b; j = j + 1; }
+    return acc;
+}
+
+fn main() i32 {
+    let total: i64 = 0;
+    total = total + (helper0(0) as i64);
+    total = total + (helper7(7) as i64);
+    total = total + (helper14(14) as i64);
+    total = total + (helper21(21) as i64);
+    total = total + (helper28(28) as i64);
+    total = total + (helper35(35) as i64);
+    total = total + (helper42(42) as i64);
+    total = total + (helper49(49) as i64);
+    total = total + (helper56(56) as i64);
+    total = total + (helper63(63) as i64);
+    total = total + (helper70(70) as i64);
+    total = total + (helper77(77) as i64);
+    total = total + (helper84(84) as i64);
+    total = total + (helper91(91) as i64);
+    total = total + (helper98(98) as i64);
+    total = total + (helper105(105) as i64);
+    total = total + (helper112(112) as i64);
+    total = total + (helper119(119) as i64);
+    total = total + (helper126(126) as i64);
+    total = total + (helper133(133) as i64);
+    total = total + (helper140(140) as i64);
+    total = total + (helper147(147) as i64);
+    total = total + (helper154(154) as i64);
+    total = total + (helper161(161) as i64);
+    total = total + (helper168(168) as i64);
+    total = total + (helper175(175) as i64);
+    total = total + (helper182(182) as i64);
+    total = total + (helper189(189) as i64);
+    total = total + (helper196(196) as i64);
+    total = total + (helper203(203) as i64);
+    total = total + (helper210(210) as i64);
+    total = total + (helper217(217) as i64);
+    total = total + (helper224(224) as i64);
+    total = total + (helper231(231) as i64);
+    total = total + (helper238(238) as i64);
+    total = total + (helper245(245) as i64);
+    total = total + (helper252(252) as i64);
+    total = total + (helper259(259) as i64);
+    total = total + (helper266(266) as i64);
+    total = total + (helper273(273) as i64);
+    total = total + (helper280(280) as i64);
+    total = total + (helper287(287) as i64);
+    total = total + (helper294(294) as i64);
+    _zag_println(_zag_i64_to_str(total));
+    return 0;
+}

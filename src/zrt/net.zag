@@ -1,0 +1,254 @@
+// zrt/net.zag — TCP sockets + epoll over raw Linux syscalls (x86-64).
+//
+// This is the bottom of the "what Bun does" stack: nonblocking listeners,
+// accept, read/write with EAGAIN handling, and a level-triggered epoll loop.
+
+@import("bytes.zag")
+
+// syscall numbers (x86-64)
+fn SYS_read() i64 { return 0; }
+fn SYS_write() i64 { return 1; }
+fn SYS_close() i64 { return 3; }
+fn SYS_socket() i64 { return 41; }
+fn SYS_connect() i64 { return 42; }
+fn SYS_accept() i64 { return 43; }
+fn SYS_setsockopt() i64 { return 54; }
+fn SYS_bind() i64 { return 49; }
+fn SYS_listen() i64 { return 50; }
+fn SYS_fcntl() i64 { return 72; }
+fn SYS_epoll_wait() i64 { return 232; }
+fn SYS_epoll_ctl() i64 { return 233; }
+fn SYS_accept4() i64 { return 288; }
+fn SYS_epoll_create1() i64 { return 291; }
+
+fn EAGAIN() i64 { return 11; }
+fn EINTR() i64 { return 4; }
+fn EINPROGRESS() i64 { return 115; }
+
+fn EPOLLIN() i64 { return 1; }
+fn EPOLLOUT() i64 { return 4; }
+fn EPOLLERR() i64 { return 8; }
+fn EPOLLHUP() i64 { return 16; }
+
+fn EPOLL_CTL_ADD() i64 { return 1; }
+fn EPOLL_CTL_DEL() i64 { return 2; }
+fn EPOLL_CTL_MOD() i64 { return 3; }
+
+// Make fd nonblocking: fcntl(fd, F_SETFL, O_NONBLOCK)
+fn net_set_nonblocking(fd: i64) i64 {
+    let flags: i64 = _zag_raw_syscall(SYS_fcntl(), fd, 3, 0, 0, 0, 0);
+    if (flags < 0) { return flags; }
+    return _zag_raw_syscall(SYS_fcntl(), fd, 4, flags | 2048, 0, 0, 0);
+}
+
+// Fill a 16-byte sockaddr_in for 0.0.0.0:port or 127.0.0.1:port.
+fn net_sockaddr(sa: *i8, port: i64, loopback: bool) void {
+    b_zero(sa, 16);
+    b_set(sa, 0, 2);            // AF_INET, little-endian u16
+    wr_u16be(sa, 2, port);      // port, network order
+    if (loopback) {
+        b_set(sa, 4, 127);
+        b_set(sa, 7, 1);        // 127.0.0.1
+    }
+}
+
+// Create a nonblocking listening socket on 127.0.0.1:port. Returns fd or -errno.
+fn net_listen(port: i64, backlog: i64) i64 {
+    let fd: i64 = _zag_raw_syscall(SYS_socket(), 2, 1, 0, 0, 0, 0);
+    if (fd < 0) { return fd; }
+    let onep: *i8 = _zag_malloc(4);
+    wr_u32le(onep, 0, 1);
+    _zag_raw_syscall(SYS_setsockopt(), fd, 1, 2, onep as i64, 4, 0); // SOL_SOCKET SO_REUSEADDR
+    _zag_free(onep);
+    let sa: *i8 = _zag_malloc(16);
+    net_sockaddr(sa, port, false);
+    let brc: i64 = _zag_raw_syscall(SYS_bind(), fd, sa as i64, 16, 0, 0, 0);
+    _zag_free(sa);
+    if (brc < 0) {
+        _zag_raw_syscall(SYS_close(), fd, 0, 0, 0, 0, 0);
+        return brc;
+    }
+    let lrc: i64 = _zag_raw_syscall(SYS_listen(), fd, backlog, 0, 0, 0, 0);
+    if (lrc < 0) {
+        _zag_raw_syscall(SYS_close(), fd, 0, 0, 0, 0, 0);
+        return lrc;
+    }
+    net_set_nonblocking(fd);
+    return fd;
+}
+
+// Accept a connection (nonblocking). Returns client fd, -11 when none pending, other -errno on error.
+fn net_accept(listen_fd: i64) i64 {
+    // accept4 with SOCK_NONBLOCK (2048)
+    return _zag_raw_syscall(SYS_accept4(), listen_fd, 0, 0, 2048, 0, 0);
+}
+
+// Read into buf; returns n, 0 on EOF, -11 when would-block, other -errno.
+fn net_read(fd: i64, buf: *i8, cap: i64) i64 {
+    return _zag_raw_syscall(SYS_read(), fd, buf as i64, cap, 0, 0, 0);
+}
+
+// Write slice; returns bytes written or -errno.
+// Uses sendto(2) with MSG_NOSIGNAL (16384) so a peer that closed the
+// connection yields -EPIPE instead of a process-killing SIGPIPE.
+fn net_write(fd: i64, data: []u8) i64 {
+    if (data.len == 0) { return 0; }
+    return _zag_raw_syscall(44, fd, _zag_slice_ptr(data) as i64, data.len as i64, 16384, 0, 0);
+}
+
+// Write to a non-socket fd (file, pipe, stdout).
+fn fd_write(fd: i64, data: []u8) i64 {
+    if (data.len == 0) { return 0; }
+    return _zag_raw_syscall(SYS_write(), fd, _zag_slice_ptr(data) as i64, data.len as i64, 0, 0, 0);
+}
+
+fn net_close(fd: i64) void {
+    _zag_raw_syscall(SYS_close(), fd, 0, 0, 0, 0, 0);
+}
+
+// Fill a 16-byte sockaddr_in for an arbitrary IPv4 host:port.
+// ip bytes are in network order (ip0 = high octet, e.g. 93.184.216.34 → 93,184,216,34).
+fn net_sockaddr_ip(sa: *i8, ip0: i64, ip1: i64, ip2: i64, ip3: i64, port: i64) void {
+    b_zero(sa, 16);
+    b_set(sa, 0, 2);            // AF_INET
+    wr_u16be(sa, 2, port);
+    b_set(sa, 4, ip0);
+    b_set(sa, 5, ip1);
+    b_set(sa, 6, ip2);
+    b_set(sa, 7, ip3);
+}
+
+// Blocking connect to an arbitrary IPv4 host. Returns fd or -errno.
+fn net_connect_ip(ip0: i64, ip1: i64, ip2: i64, ip3: i64, port: i64) i64 {
+    let fd: i64 = _zag_raw_syscall(SYS_socket(), 2, 1, 0, 0, 0, 0);
+    if (fd < 0) { return fd; }
+    let sa: *i8 = _zag_malloc(16);
+    net_sockaddr_ip(sa, ip0, ip1, ip2, ip3, port);
+    let crc: i64 = _zag_raw_syscall(SYS_connect(), fd, sa as i64, 16, 0, 0, 0);
+    _zag_free(sa);
+    if (crc < 0) {
+        net_close(fd);
+        return crc;
+    }
+    return fd;
+}
+
+// Nonblocking connect to an arbitrary IPv4 host. Returns fd (completes async,
+// wait for EPOLLOUT) or -errno on immediate failure.
+fn net_connect_ip_nb(ip0: i64, ip1: i64, ip2: i64, ip3: i64, port: i64) i64 {
+    let fd: i64 = _zag_raw_syscall(SYS_socket(), 2, 1, 0, 0, 0, 0);
+    if (fd < 0) { return fd; }
+    net_set_nonblocking(fd);
+    let sa: *i8 = _zag_malloc(16);
+    net_sockaddr_ip(sa, ip0, ip1, ip2, ip3, port);
+    let crc: i64 = _zag_raw_syscall(SYS_connect(), fd, sa as i64, 16, 0, 0, 0);
+    _zag_free(sa);
+    if (crc < 0 && crc != (0 - EINPROGRESS())) {
+        net_close(fd);
+        return crc;
+    }
+    return fd;
+}
+
+// Blocking read (for the TLS handshake): temporarily used on a blocking socket.
+fn net_read_blocking(fd: i64, buf: *i8, cap: i64) i64 {
+    return _zag_raw_syscall(SYS_read(), fd, buf as i64, cap, 0, 0, 0);
+}
+
+// Set a socket back to blocking mode (clear O_NONBLOCK) — for the handshake.
+fn net_set_blocking(fd: i64) i64 {
+    let flags: i64 = _zag_raw_syscall(SYS_fcntl(), fd, 3, 0, 0, 0, 0);
+    if (flags < 0) { return flags; }
+    return _zag_raw_syscall(SYS_fcntl(), fd, 4, flags & 2147481599, 0, 0, 0);  // clear O_NONBLOCK(2048)
+}
+
+// Set SO_RCVTIMEO (seconds) on a socket — bounds a blocking recv.
+fn net_set_rcvtimeo(fd: i64, secs: i64) void {
+    let tv: *i8 = _zag_malloc(16);
+    wr_u64le(tv, 0, secs);
+    wr_u64le(tv, 8, 0);
+    _zag_raw_syscall(SYS_setsockopt(), fd, 1, 20, tv as i64, 16, 0);  // SOL_SOCKET SO_RCVTIMEO
+    _zag_free(tv);
+}
+
+// Nonblocking connect to 127.0.0.1:port. Returns fd (connection completes
+// asynchronously — wait for EPOLLOUT) or -errno on immediate failure.
+fn net_connect_local_nb(port: i64) i64 {
+    let fd: i64 = _zag_raw_syscall(SYS_socket(), 2, 1, 0, 0, 0, 0);
+    if (fd < 0) { return fd; }
+    net_set_nonblocking(fd);
+    let sa: *i8 = _zag_malloc(16);
+    net_sockaddr(sa, port, true);
+    let crc: i64 = _zag_raw_syscall(SYS_connect(), fd, sa as i64, 16, 0, 0, 0);
+    _zag_free(sa);
+    if (crc < 0 && crc != (0 - EINPROGRESS())) {
+        net_close(fd);
+        return crc;
+    }
+    return fd;
+}
+
+// Blocking-connect a socket to 127.0.0.1:port (for the outbound HTTP client).
+// Returns fd or -errno.
+fn net_connect_local(port: i64) i64 {
+    let fd: i64 = _zag_raw_syscall(SYS_socket(), 2, 1, 0, 0, 0, 0);
+    if (fd < 0) { return fd; }
+    let sa: *i8 = _zag_malloc(16);
+    net_sockaddr(sa, port, true);
+    let crc: i64 = _zag_raw_syscall(SYS_connect(), fd, sa as i64, 16, 0, 0, 0);
+    _zag_free(sa);
+    if (crc < 0) {
+        net_close(fd);
+        return crc;
+    }
+    return fd;
+}
+
+// ── epoll ────────────────────────────────────────────────────────────────────
+// epoll_event on x86-64 is 12 bytes PACKED: u32 events @0, u64 data @4.
+
+struct Epoll {
+    epfd: i64,
+    evbuf: *i8,     // maxevents * 12 bytes
+    maxevents: i32,
+}
+
+fn ep_create(maxevents: i32) Epoll {
+    let epfd: i64 = _zag_raw_syscall(SYS_epoll_create1(), 0, 0, 0, 0, 0, 0);
+    let buf: *i8 = _zag_malloc(maxevents * 12);
+    return Epoll{ .epfd = epfd, .evbuf = buf, .maxevents = maxevents };
+}
+
+fn ep_ctl(ep: Epoll, op: i64, fd: i64, events: i64) i64 {
+    let ev: *i8 = _zag_malloc(12);
+    wr_u32le(ev, 0, events);
+    wr_u64le(ev, 4, fd);     // we store the fd itself as the user data
+    let rc: i64 = _zag_raw_syscall(SYS_epoll_ctl(), ep.epfd, op, fd, ev as i64, 0, 0);
+    _zag_free(ev);
+    return rc;
+}
+
+fn ep_add(ep: Epoll, fd: i64, events: i64) i64 {
+    return ep_ctl(ep, EPOLL_CTL_ADD(), fd, events);
+}
+
+fn ep_mod(ep: Epoll, fd: i64, events: i64) i64 {
+    return ep_ctl(ep, EPOLL_CTL_MOD(), fd, events);
+}
+
+fn ep_del(ep: Epoll, fd: i64) i64 {
+    return _zag_raw_syscall(SYS_epoll_ctl(), ep.epfd, EPOLL_CTL_DEL(), fd, 0, 0, 0);
+}
+
+// Wait for events; returns count (0 on timeout) or -errno.
+fn ep_wait(ep: Epoll, timeout_ms: i64) i64 {
+    return _zag_raw_syscall(SYS_epoll_wait(), ep.epfd, ep.evbuf as i64, ep.maxevents as i64, timeout_ms, 0, 0);
+}
+
+fn ep_event_flags(ep: Epoll, idx: i32) i64 {
+    return rd_u32le(ep.evbuf, idx * 12);
+}
+
+fn ep_event_fd(ep: Epoll, idx: i32) i64 {
+    return rd_u64le(ep.evbuf, idx * 12 + 4);
+}

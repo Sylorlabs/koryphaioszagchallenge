@@ -1,0 +1,10 @@
+@import("../zagstd/rt.zag")
+
+// top-level global?
+let counter: i32 = 0;
+
+fn main() i32 {
+    counter = counter + 1;
+    _zag_println(_zag_i64_to_str(counter as i64));
+    return 0;
+}

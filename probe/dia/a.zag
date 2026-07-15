@@ -1,0 +1,2 @@
+@import("util.zag")
+fn from_a(x: i32) i32 { return double_it(x) + 1; }

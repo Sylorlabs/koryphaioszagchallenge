@@ -1,0 +1,10 @@
+@import("../src/zrt/tls.zag")
+fn main() i32 {
+    let pub: []u8 = tls_buf(32);   // dummy 32-byte pubkey
+    let sid: []u8 = tls_buf(32);
+    let rnd: []u8 = tls_buf(32);
+    let ch: []u8 = tls_client_hello("api.openai.com", sid, rnd, pub);
+    _zag_print("len="); _zag_println(_zag_i64_to_str(ch.len as i64));
+    _zag_println(str_to_hex(ch));
+    return 0;
+}

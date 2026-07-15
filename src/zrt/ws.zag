@@ -1,0 +1,189 @@
+// zrt/ws.zag — WebSocket (RFC 6455) handshake + frame codec.
+//
+// Depends on sha1.zag (sha1(data) -> 20-byte []u8) and base64.zag
+// (b64_encode(data) -> []u8) for the Sec-WebSocket-Accept derivation,
+// and on http.zag for Conn/HttpServer plumbing.
+//
+// Opcodes: 0 continuation, 1 text, 2 binary, 8 close, 9 ping, 10 pong.
+
+@import("http.zag")
+@import("sha1.zag")
+@import("base64.zag")
+
+fn WS_GUID() []u8 { return "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"; }
+
+// Complete the upgrade handshake; flips conn to kind==1. Returns false when
+// the request lacks a websocket key.
+fn ws_upgrade(srv: *HttpServer, conn: *Conn, req: *Request) bool {
+    let key: []u8 = http_header_get(req, "sec-websocket-key");
+    if (key.len == 0) { return false; }
+    let joined: []u8 = _zag_str_concat(key, WS_GUID());
+    let digest: []u8 = sha1(joined);
+    let accept: []u8 = b64_encode(digest);
+
+    let sb: StrBuf = sb_make();
+    let hb: *StrBuf = &sb;
+    sb_app(hb, "HTTP/1.1 101 Switching Protocols\r\n");
+    sb_app(hb, "Upgrade: websocket\r\n");
+    sb_app(hb, "Connection: Upgrade\r\n");
+    sb_app(hb, "Sec-WebSocket-Accept: ");
+    sb_app(hb, accept);
+    sb_app(hb, "\r\n");
+    let proto: []u8 = http_header_get(req, "sec-websocket-protocol");
+    if (proto.len > 0) {
+        // echo the first requested subprotocol (frontend sends 'koryphaios')
+        let first: SplitResult = str_split_first(proto, ',');
+        sb_app(hb, "Sec-WebSocket-Protocol: ");
+        sb_app(hb, str_trim(first.head));
+        sb_app(hb, "\r\n");
+    }
+    sb_app(hb, "\r\n");
+    http_out(conn, sb_slice(hb));
+    conn.*.kind = 1;
+    http_flush(srv, conn);
+    return true;
+}
+
+// ── frame writing ─────────────────────────────────────────────────────────────
+
+fn ws_frame_header(out: *StrBuf, opcode: i32, payload_len: i32) void {
+    sb_ch(out, (128 | opcode) as u8);          // FIN | opcode
+    if (payload_len < 126) {
+        sb_ch(out, payload_len as u8);          // unmasked, short length
+    } else if (payload_len < 65536) {
+        sb_ch(out, 126);
+        sb_ch(out, ((payload_len >> 8) & 255) as u8);
+        sb_ch(out, (payload_len & 255) as u8);
+    } else {
+        sb_ch(out, 127);
+        sb_ch(out, 0); sb_ch(out, 0); sb_ch(out, 0); sb_ch(out, 0);
+        sb_ch(out, ((payload_len >> 24) & 255) as u8);
+        sb_ch(out, ((payload_len >> 16) & 255) as u8);
+        sb_ch(out, ((payload_len >> 8) & 255) as u8);
+        sb_ch(out, (payload_len & 255) as u8);
+    }
+}
+
+fn ws_send_op(srv: *HttpServer, conn: *Conn, opcode: i32, payload: []u8) void {
+    if (!conn.*.alive || conn.*.kind != 1) { return; }
+    let sb: StrBuf = sb_make();
+    ws_frame_header(&sb, opcode, payload.len);
+    sb_app(&sb, payload);
+    http_out(conn, sb_slice(&sb));
+    http_flush(srv, conn);
+}
+
+fn ws_send_text(srv: *HttpServer, conn: *Conn, payload: []u8) void {
+    ws_send_op(srv, conn, 1, payload);
+}
+
+fn ws_send_ping(srv: *HttpServer, conn: *Conn) void {
+    ws_send_op(srv, conn, 9, "");
+}
+
+fn ws_close(srv: *HttpServer, conn: *Conn, code: i32) void {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, ((code >> 8) & 255) as u8);
+    sb_ch(&sb, (code & 255) as u8);
+    ws_send_op(srv, conn, 8, sb_slice(&sb));
+    http_conn_close(srv, conn);
+}
+
+// ── frame reading ─────────────────────────────────────────────────────────────
+
+// Drain all complete frames from conn.inbuf; dispatches data frames to
+// app_ws_frame(srv, conn, opcode, payload).
+fn ws_drain_frames(srv: *HttpServer, conn: *Conn) void {
+    let go: bool = true;
+    while (go && conn.*.alive) {
+        let avail: []u8 = conn.*.inbuf.data[conn.*.in_off..conn.*.inbuf.len];
+        if (avail.len < 2) { go = false; }
+        else {
+            let b0: i32 = avail[0] as i32;
+            let b1: i32 = avail[1] as i32;
+            let fin: bool = (b0 & 128) != 0;
+            let opcode: i32 = b0 & 15;
+            let masked: bool = (b1 & 128) != 0;
+            let plen: i64 = (b1 & 127) as i64;
+            let off: i32 = 2;
+            let ok: bool = true;
+            if (plen == 126) {
+                if (avail.len < 4) { ok = false; }
+                else {
+                    plen = (((avail[2] as i64) & 255) << 8) | ((avail[3] as i64) & 255);
+                    off = 4;
+                }
+            } else if (plen == 127) {
+                if (avail.len < 10) { ok = false; }
+                else {
+                    plen = 0;
+                    let k: i32 = 2;
+                    while (k < 10) {
+                        plen = (plen << 8) | ((avail[k] as i64) & 255);
+                        k = k + 1;
+                    }
+                    off = 10;
+                }
+            }
+            if (!ok) { go = false; }
+            else {
+                let mask_off: i32 = off;
+                if (masked) { off = off + 4; }
+                if (plen > 16777216) {
+                    // 16 MB frame cap — protocol abuse, drop connection
+                    http_conn_close(srv, conn);
+                    go = false;
+                } else if ((avail.len as i64) < ((off as i64) + plen)) {
+                    go = false;   // incomplete frame
+                } else {
+                    // unmask in place
+                    let payload: []u8 = avail[off..off + (plen as i32)];
+                    if (masked) {
+                        let data: *u8 = _zag_slice_ptr(payload) as *u8;
+                        let i: i32 = 0;
+                        while (i < payload.len) {
+                            data[i] = data[i] ^ avail[mask_off + (i % 4)];
+                            i = i + 1;
+                        }
+                    }
+                    conn.*.in_off = conn.*.in_off + off + (plen as i32);
+
+                    if (opcode == 8) {
+                        ws_close(srv, conn, 1000);
+                        go = false;
+                    } else if (opcode == 9) {
+                        ws_send_op(srv, conn, 10, payload);   // ping → pong
+                    } else if (opcode == 10) {
+                        // pong — liveness noted via last_active_ms
+                    } else if (opcode == 0) {
+                        // continuation
+                        let i2: i32 = 0;
+                        while (i2 < payload.len) {
+                            push[u8](&conn.*.ws_frag, payload[i2]);
+                            i2 = i2 + 1;
+                        }
+                        if (fin && conn.*.ws_frag_op != 0) {
+                            let msg: []u8 = conn.*.ws_frag.data[0..conn.*.ws_frag.len];
+                            app_ws_frame(srv, conn, conn.*.ws_frag_op, msg);
+                            conn.*.ws_frag.len = 0;
+                            conn.*.ws_frag_op = 0;
+                        }
+                    } else {
+                        if (fin) {
+                            app_ws_frame(srv, conn, opcode, payload);
+                        } else {
+                            conn.*.ws_frag.len = 0;
+                            conn.*.ws_frag_op = opcode;
+                            let i3: i32 = 0;
+                            while (i3 < payload.len) {
+                                push[u8](&conn.*.ws_frag, payload[i3]);
+                                i3 = i3 + 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (conn.*.alive) { http_compact(conn); }
+}

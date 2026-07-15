@@ -1,0 +1,16 @@
+@import("../zagstd/rt.zag")
+
+fn main() i32 {
+    let a: i32 = 5;
+    let b: i32 = a << 2;
+    _zag_println(_zag_i64_to_str(b as i64));
+    let c: i32 = b | 3;
+    _zag_println(_zag_i64_to_str(c as i64));
+    let d: i32 = c ^ 5;
+    _zag_println(_zag_i64_to_str(d as i64));
+    let e: i32 = d >> 1;
+    _zag_println(_zag_i64_to_str(e as i64));
+    let f: i32 = 255 & 15;
+    _zag_println(_zag_i64_to_str(f as i64));
+    return 0;
+}

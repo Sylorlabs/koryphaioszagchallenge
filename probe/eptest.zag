@@ -1,0 +1,42 @@
+@import("../src/zrt/net.zag")
+
+fn main() i32 {
+    let lfd: i64 = net_listen(18081, 64);
+    if (lfd < 0) { _zag_println("listen failed"); return 1; }
+    let ep: Epoll = ep_create(64);
+    ep_add(ep, lfd, EPOLLIN());
+    _zag_println("epoll loop on 18081");
+    let served: i32 = 0;
+    let buf: *i8 = _zag_malloc(8192);
+    while (served < 2) {
+        let n: i64 = ep_wait(ep, 1000);
+        let i: i32 = 0;
+        while (i < (n as i32)) {
+            let fd: i64 = ep_event_fd(ep, i);
+            if (fd == lfd) {
+                let go: i32 = 1;
+                while (go == 1) {
+                    let cfd: i64 = net_accept(lfd);
+                    if (cfd < 0) { go = 0; }
+                    else { ep_add(ep, cfd, EPOLLIN()); }
+                }
+            } else {
+                let rn: i64 = net_read(fd, buf, 8192);
+                if (rn > 0) {
+                    let body: []u8 = "ok-from-epoll";
+                    let resp: []u8 = _zag_str_concat("HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\n", body);
+                    net_write(fd, resp);
+                    ep_del(ep, fd);
+                    net_close(fd);
+                    served = served + 1;
+                } else if (rn == 0 || rn != (0 - EAGAIN())) {
+                    ep_del(ep, fd);
+                    net_close(fd);
+                }
+            }
+            i = i + 1;
+        }
+    }
+    _zag_println("served 2, exiting");
+    return 0;
+}

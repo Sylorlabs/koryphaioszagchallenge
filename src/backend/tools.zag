@@ -1,0 +1,243 @@
+// backend/tools.zag — the agent's tool registry + executor.
+//
+// This is what makes Kory an *agent* rather than a chatbot: the provider's
+// streamed tool calls are dispatched to real handlers that run bash, read and
+// write files, edit, list, grep, and glob over the project — using the native
+// syscall primitives (including the _zag_exec_capture we added to znc).
+
+@import("app.zag")
+
+struct ToolResult {
+    output: []u8,
+    is_error: bool,
+    duration_ms: i64,
+}
+
+// Capture stdout+stderr of a shell command (bash/ls/grep/glob want stderr too).
+fn tool_shell(cmd: []u8) []u8 {
+    return _zag_exec_capture(_zag_str_concat("( ", _zag_str_concat(cmd, " ) 2>&1")));
+}
+
+// Single-quote a string for safe shell interpolation (escape embedded quotes).
+fn tool_shq(s: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, 39 as u8);   // '
+    let i: i32 = 0;
+    while (i < s.len) {
+        if (s[i] == 39) {
+            sb_app(&sb, "'\\''");   // ' -> '\''
+        } else {
+            sb_ch(&sb, s[i]);
+        }
+        i = i + 1;
+    }
+    sb_ch(&sb, 39 as u8);
+    return sb_slice(&sb);
+}
+
+// Replace the first occurrence of `old` in `s` with `rep`; found=false if absent.
+struct ReplaceResult { text: []u8, found: bool }
+fn tool_replace_first(s: []u8, old: []u8, rep: []u8) ReplaceResult {
+    if (old.len == 0) { return ReplaceResult{ .text = s, .found = false }; }
+    let at: i32 = str_index_of(s, old);
+    if (at < 0) { return ReplaceResult{ .text = s, .found = false }; }
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, s[0..at]);
+    sb_app(&sb, rep);
+    sb_app(&sb, s[at + old.len..s.len]);
+    return ReplaceResult{ .text = sb_slice(&sb), .found = true };
+}
+
+// Count occurrences of `needle` in `s`.
+fn tool_count_occ(s: []u8, needle: []u8) i32 {
+    if (needle.len == 0) { return 0; }
+    let n: i32 = 0;
+    let from: i32 = 0;
+    let go: bool = true;
+    while (go) {
+        let at: i32 = str_index_of_from(s, needle, from);
+        if (at < 0) { go = false; }
+        else { n = n + 1; from = at + needle.len; }
+    }
+    return n;
+}
+
+fn tool_ok(out: []u8) ToolResult {
+    return ToolResult{ .output = out, .is_error = false, .duration_ms = 0 };
+}
+fn tool_err(out: []u8) ToolResult {
+    return ToolResult{ .output = out, .is_error = true, .duration_ms = 0 };
+}
+
+// Dispatch a tool call. `args` is the parsed JSON-object arguments node.
+fn tool_execute(app: *AppState, name: []u8, args: ?*JNode) ToolResult {
+    let started: i64 = _zag_clock_monotonic_ms();
+    let res: ToolResult = tool_execute_inner(app, name, args);
+    res.duration_ms = _zag_clock_monotonic_ms() - started;
+    return res;
+}
+
+fn tool_execute_inner(app: *AppState, name: []u8, args: ?*JNode) ToolResult {
+    let _a: i64 = app.*.started_ms;
+
+    if (str_eq(name, "bash")) {
+        let cmd: []u8 = json_str(json_get(args, "command"));
+        if (cmd.len == 0) { return tool_err("bash: missing 'command'"); }
+        return tool_ok(tool_shell(cmd));
+    }
+
+    if (str_eq(name, "read_file")) {
+        let path: []u8 = json_str(json_get(args, "path"));
+        if (path.len == 0) { return tool_err("read_file: missing 'path'"); }
+        if (_zag_file_exists(path) == 0) {
+            return tool_err(_zag_str_concat("read_file: no such file: ", path));
+        }
+        let content: []u8 = _zag_read_file(path);
+        if (content.len < 0) { return tool_err(_zag_str_concat("read_file: unreadable: ", path)); }
+        return tool_ok(content);
+    }
+
+    if (str_eq(name, "write_file")) {
+        let path: []u8 = json_str(json_get(args, "path"));
+        let content: []u8 = json_str(json_get(args, "content"));
+        if (path.len == 0) { return tool_err("write_file: missing 'path'"); }
+        // ensure parent dir exists
+        let slash: i32 = 0 - 1;
+        let i: i32 = path.len - 1;
+        while (i >= 0 && slash < 0) {
+            if (path[i] == 47) { slash = i; }
+            i = i - 1;
+        }
+        if (slash > 0) {
+            tool_shell(_zag_str_concat("mkdir -p ", tool_shq(path[0..slash])));
+        }
+        let rc: i32 = _zag_write_file(path, content);
+        if (rc != 0) { return tool_err(_zag_str_concat("write_file: failed to write ", path)); }
+        let sb: StrBuf = sb_make();
+        sb_app(&sb, "Wrote ");
+        sb_int(&sb, content.len as i64);
+        sb_app(&sb, " bytes to ");
+        sb_app(&sb, path);
+        return tool_ok(sb_slice(&sb));
+    }
+
+    if (str_eq(name, "edit_file")) {
+        let path: []u8 = json_str(json_get(args, "path"));
+        let old_s: []u8 = json_str(json_get(args, "old_str"));
+        if (old_s.len == 0) { old_s = json_str(json_get(args, "oldString")); }
+        let new_s: []u8 = json_str(json_get(args, "new_str"));
+        if (new_s.len == 0) { new_s = json_str(json_get(args, "newString")); }
+        if (path.len == 0) { return tool_err("edit_file: missing 'path'"); }
+        if (_zag_file_exists(path) == 0) { return tool_err(_zag_str_concat("edit_file: no such file: ", path)); }
+        let content: []u8 = _zag_read_file(path);
+        if (content.len < 0) { return tool_err(_zag_str_concat("edit_file: unreadable: ", path)); }
+        let occ: i32 = tool_count_occ(content, old_s);
+        if (occ == 0) { return tool_err("edit_file: old_str not found in file"); }
+        if (occ > 1) { return tool_err("edit_file: old_str is ambiguous (matches multiple times); include more context"); }
+        let rr: ReplaceResult = tool_replace_first(content, old_s, new_s);
+        let rc: i32 = _zag_write_file(path, rr.text);
+        if (rc != 0) { return tool_err(_zag_str_concat("edit_file: failed to write ", path)); }
+        return tool_ok(_zag_str_concat("Edited ", path));
+    }
+
+    if (str_eq(name, "ls")) {
+        let path: []u8 = json_str(json_get(args, "path"));
+        if (path.len == 0) { path = "."; }
+        return tool_ok(tool_shell(_zag_str_concat("ls -la ", tool_shq(path))));
+    }
+
+    if (str_eq(name, "grep")) {
+        let pattern: []u8 = json_str(json_get(args, "pattern"));
+        if (pattern.len == 0) { return tool_err("grep: missing 'pattern'"); }
+        let path: []u8 = json_str(json_get(args, "path"));
+        if (path.len == 0) { path = "."; }
+        let cmd: []u8 = _zag_str_concat("grep -rn --binary-files=without-match -- ",
+            _zag_str_concat(tool_shq(pattern), _zag_str_concat(" ", _zag_str_concat(tool_shq(path), " | head -200"))));
+        return tool_ok(tool_shell(cmd));
+    }
+
+    if (str_eq(name, "glob")) {
+        let pattern: []u8 = json_str(json_get(args, "pattern"));
+        if (pattern.len == 0) { return tool_err("glob: missing 'pattern'"); }
+        let cmd: []u8 = _zag_str_concat("find . -type f -not -path './.git/*' -name ",
+            _zag_str_concat(tool_shq(pattern), " | head -200"));
+        return tool_ok(tool_shell(cmd));
+    }
+
+    return tool_err(_zag_str_concat("unknown tool: ", name));
+}
+
+// True for tools a read-only critic is permitted to call.
+fn tool_is_readonly(name: []u8) bool {
+    return str_eq(name, "read_file") || str_eq(name, "grep") || str_eq(name, "glob") || str_eq(name, "ls");
+}
+
+// ── tool schema definitions for the provider request ─────────────────────────
+
+// One OpenAI-format function tool: {"type":"function","function":{name,description,parameters}}
+fn tool_def(sb: *StrBuf, first: bool, name: []u8, desc: []u8, params: []u8) void {
+    if (!first) { sb_ch(sb, 44 as u8); }
+    sb_app(sb, "{\"type\":\"function\",\"function\":{\"name\":\"");
+    sb_app(sb, name);
+    sb_app(sb, "\",\"description\":\"");
+    sb_app(sb, desc);
+    sb_app(sb, "\",\"parameters\":");
+    sb_app(sb, params);
+    sb_app(sb, "}}");
+}
+
+// Append the shared read/write filesystem + shell tools.
+fn tools_base(sb: *StrBuf, first: bool) void {
+    tool_def(sb, first, "bash", "Run a bash command in the project directory and return combined stdout/stderr.",
+        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The shell command to run.\"}},\"required\":[\"command\"]}");
+    tool_def(sb, false, "read_file", "Read a UTF-8 text file and return its contents.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}");
+    tool_def(sb, false, "write_file", "Create or overwrite a file with the given content.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}");
+    tool_def(sb, false, "edit_file", "Replace the single unique occurrence of old_str with new_str in a file.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_str\":{\"type\":\"string\"},\"new_str\":{\"type\":\"string\"}},\"required\":[\"path\",\"old_str\",\"new_str\"]}");
+    tool_def(sb, false, "ls", "List a directory in long format.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}");
+    tool_def(sb, false, "grep", "Recursively search files for a regex pattern (grep -rn).",
+        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}");
+    tool_def(sb, false, "glob", "Find files by name pattern (find -name).",
+        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}");
+}
+
+// Manager toolset: base tools + delegation.
+fn tools_openai_defs() []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, 91 as u8);
+    tools_base(&sb, true);
+    tool_def(&sb, false, "delegate_to_worker", "Delegate a substantial, self-contained subtask to a specialist worker agent (domain: general/ui/backend/test/review). The worker completes it autonomously and its reviewed result is returned to you.",
+        "{\"type\":\"object\",\"properties\":{\"domain\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"}},\"required\":[\"task\"]}");
+    tool_def(&sb, false, "ask_user", "Ask the user a clarifying question and wait for their answer before continuing. Provide options when the answer is a choice.",
+        "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"question\"]}");
+    sb_ch(&sb, 93 as u8);
+    return sb_slice(&sb);
+}
+
+// Worker toolset: base tools, no delegation (prevents recursion).
+fn tools_worker_defs() []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, 91 as u8);
+    tools_base(&sb, true);
+    sb_ch(&sb, 93 as u8);
+    return sb_slice(&sb);
+}
+
+// Critic toolset: read-only inspection tools only.
+fn tools_critic_defs() []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, 91 as u8);
+    tool_def(&sb, true, "read_file", "Read a UTF-8 text file and return its contents.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}");
+    tool_def(&sb, false, "grep", "Recursively search files for a regex pattern (grep -rn).",
+        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}");
+    tool_def(&sb, false, "glob", "Find files by name pattern (find -name).",
+        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}");
+    tool_def(&sb, false, "ls", "List a directory in long format.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}");
+    sb_ch(&sb, 93 as u8);
+    return sb_slice(&sb);
+}

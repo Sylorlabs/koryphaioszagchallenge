@@ -1,0 +1,172 @@
+// zrt/dns.zag — native DNS resolver (A records over UDP).
+//
+// Reads the first `nameserver` from /etc/resolv.conf, sends a standard A-record
+// query, and parses the first A record from the response. No libc, no getaddrinfo.
+
+@import("net.zag")
+@import("str.zag")
+
+struct DnsResult {
+    ip0: i64,
+    ip1: i64,
+    ip2: i64,
+    ip3: i64,
+    ok: bool,
+}
+
+// Parse a dotted-quad "a.b.c.d" into four octets. ok=false if malformed.
+fn dns_parse_ipv4(s: []u8) DnsResult {
+    let parts: *i64 = _zag_malloc(4 * 8) as *i64;
+    let count: i32 = 0;
+    let cur: i64 = 0;
+    let have_digit: bool = false;
+    let i: i32 = 0;
+    while (i <= s.len && count < 5) {
+        if (i == s.len || s[i] == 46) {   // '.' or end
+            if (have_digit && count < 4) { parts[count] = cur; }
+            count = count + 1;
+            cur = 0;
+            have_digit = false;
+        } else if (s[i] >= 48 && s[i] <= 57) {
+            cur = cur * 10 + ((s[i] as i64) - 48);
+            have_digit = true;
+        } else {
+            i = s.len;   // stop on any non-digit/dot
+        }
+        i = i + 1;
+    }
+    if (count == 4) {
+        return DnsResult{ .ip0 = parts[0], .ip1 = parts[1], .ip2 = parts[2], .ip3 = parts[3], .ok = true };
+    }
+    return DnsResult{ .ip0 = 0, .ip1 = 0, .ip2 = 0, .ip3 = 0, .ok = false };
+}
+
+// Read the first nameserver IP from /etc/resolv.conf; default 8.8.8.8.
+fn dns_nameserver() DnsResult {
+    let content: []u8 = "";
+    if (_zag_file_exists("/etc/resolv.conf") == 1) {
+        let raw: []u8 = _zag_read_file("/etc/resolv.conf");
+        if (raw.len > 0) { content = raw; }
+    }
+    let start: i32 = 0;
+    let i: i32 = 0;
+    while (i <= content.len) {
+        if (i == content.len || content[i] == 10) {
+            let line: []u8 = str_trim(content[start..i]);
+            if (str_starts_with(line, "nameserver")) {
+                let rest: []u8 = str_trim(line[10..line.len]);
+                let r: DnsResult = dns_parse_ipv4(rest);
+                if (r.ok) { return r; }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return DnsResult{ .ip0 = 8, .ip1 = 8, .ip2 = 8, .ip3 = 8, .ok = true };
+}
+
+// Build the DNS question name: labels length-prefixed, 0-terminated.
+fn dns_write_qname(buf: *i8, off: i32, host: []u8) i32 {
+    let p: i32 = off;
+    let seg_start: i32 = 0;
+    let i: i32 = 0;
+    while (i <= host.len) {
+        if (i == host.len || host[i] == 46) {
+            let seglen: i32 = i - seg_start;
+            b_set(buf, p, seglen as i64);
+            p = p + 1;
+            let j: i32 = seg_start;
+            while (j < i) {
+                b_set(buf, p, host[j] as i64);
+                p = p + 1;
+                j = j + 1;
+            }
+            seg_start = i + 1;
+        }
+        i = i + 1;
+    }
+    b_set(buf, p, 0);   // root label
+    p = p + 1;
+    return p;
+}
+
+// Resolve `host` to an IPv4 address. ok=false on any failure.
+fn dns_resolve(host: []u8) DnsResult {
+    // literal IP?
+    let lit: DnsResult = dns_parse_ipv4(host);
+    if (lit.ok) { return lit; }
+
+    let ns: DnsResult = dns_nameserver();
+    let fd: i64 = _zag_raw_syscall(SYS_socket(), 2, 2, 0, 0, 0, 0);   // AF_INET, SOCK_DGRAM
+    if (fd < 0) { return DnsResult{ .ip0 = 0, .ip1 = 0, .ip2 = 0, .ip3 = 0, .ok = false }; }
+    net_set_rcvtimeo(fd, 4);
+
+    // build query
+    let q: *i8 = _zag_malloc(512);
+    let qid: i64 = _zag_clock_monotonic_ms() & 65535;
+    wr_u16be(q, 0, qid);
+    wr_u16be(q, 2, 256);      // flags: recursion desired (0x0100)
+    wr_u16be(q, 4, 1);        // qdcount
+    wr_u16be(q, 6, 0);
+    wr_u16be(q, 8, 0);
+    wr_u16be(q, 10, 0);
+    let p: i32 = dns_write_qname(q, 12, host);
+    wr_u16be(q, p, 1);        // qtype A
+    wr_u16be(q, p + 2, 1);    // qclass IN
+    let qlen: i32 = p + 4;
+
+    // sendto nameserver:53
+    let sa: *i8 = _zag_malloc(16);
+    net_sockaddr_ip(sa, ns.ip0, ns.ip1, ns.ip2, ns.ip3, 53);
+    let src: i64 = _zag_raw_syscall(44, fd, q as i64, qlen as i64, 0, sa as i64, 16);   // sendto
+    if (src < 0) {
+        net_close(fd);
+        return DnsResult{ .ip0 = 0, .ip1 = 0, .ip2 = 0, .ip3 = 0, .ok = false };
+    }
+
+    // recvfrom
+    let resp: *i8 = _zag_malloc(2048);
+    let n: i64 = _zag_raw_syscall(45, fd, resp as i64, 2048, 0, 0, 0);   // recvfrom
+    net_close(fd);
+    if (n < 12) { return DnsResult{ .ip0 = 0, .ip1 = 0, .ip2 = 0, .ip3 = 0, .ok = false }; }
+
+    let ancount: i64 = rd_u16be(resp, 6);
+    // skip the question section
+    let off: i32 = 12;
+    let go: bool = true;
+    while (go) {
+        let len: i64 = b_at(resp, off);
+        if (len == 0) { off = off + 1; go = false; }
+        else if ((len & 192) == 192) { off = off + 2; go = false; }   // pointer
+        else { off = off + 1 + (len as i32); }
+    }
+    off = off + 4;   // qtype + qclass
+
+    // walk answer records
+    let a: i64 = 0;
+    while (a < ancount) {
+        // name (may be a compression pointer)
+        let nlen: i64 = b_at(resp, off);
+        if ((nlen & 192) == 192) { off = off + 2; }
+        else {
+            let nk: bool = true;
+            while (nk) {
+                let l: i64 = b_at(resp, off);
+                if (l == 0) { off = off + 1; nk = false; }
+                else { off = off + 1 + (l as i32); }
+            }
+        }
+        let rtype: i64 = rd_u16be(resp, off);
+        let rdlen: i64 = rd_u16be(resp, off + 8);
+        let rdata: i32 = off + 10;
+        if (rtype == 1 && rdlen == 4) {
+            let r: DnsResult = DnsResult{
+                .ip0 = b_at(resp, rdata), .ip1 = b_at(resp, rdata + 1),
+                .ip2 = b_at(resp, rdata + 2), .ip3 = b_at(resp, rdata + 3), .ok = true };
+            return r;
+        }
+        off = rdata + (rdlen as i32);
+        a = a + 1;
+    }
+    return DnsResult{ .ip0 = 0, .ip1 = 0, .ip2 = 0, .ip3 = 0, .ok = false };
+}

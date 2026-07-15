@@ -1,0 +1,20 @@
+@import("../src/zrt/tls.zag")
+fn main() i32 {
+    let dns: DnsResult = dns_resolve("api.openai.com");
+    let fd: i64 = net_connect_ip(dns.ip0, dns.ip1, dns.ip2, dns.ip3, 443);
+    if (fd < 0) { _zag_println("connect fail"); return 1; }
+    net_set_rcvtimeo(fd, 10);
+    let priv: []u8 = tls_rand(32);
+    let ch: []u8 = tls_client_hello("api.openai.com", tls_rand(32), tls_rand(32), x25519_base(priv));
+    let hdr: *i8 = _zag_malloc(5);
+    hdr[0] = 22 as i8; hdr[1] = 3 as i8; hdr[2] = 1 as i8;
+    hdr[3] = ((ch.len >> 8) & 255) as i8; hdr[4] = (ch.len & 255) as i8;
+    net_write(fd, hdr[0..5]); net_write(fd, ch);
+    // test tls_read_exact(fd, 5)
+    let e5: ?[]u8 = tls_read_exact(fd, 5);
+    let got5: []u8 = ""; let ok5: bool = false;
+    if (e5) |x| { got5 = x; ok5 = true; }
+    _zag_println(_zag_str_concat("read_exact(5) ok=", _zag_i64_to_str(ok5 as i64)));
+    if (ok5) { _zag_println(_zag_str_concat("hdr hex: ", str_to_hex(got5))); }
+    return 0;
+}

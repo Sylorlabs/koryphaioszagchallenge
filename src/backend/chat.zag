@@ -1,0 +1,1135 @@
+// backend/chat.zag — orchestration: the Kory agentic turn loop, event-driven.
+//
+// A ChatRun streams from a provider, forwards WS events (stream.delta with
+// 50 ms coalescing, kory.thought, kory.routing, agent.status, stream.tool_call,
+// stream.tool_result, stream.usage, session.updated), and — the part that makes
+// Kory an *agent* — executes the tool calls the model requests, feeds the
+// results back, and requests another turn, up to a 25-turn cap.
+//
+// Provider transports:
+//   demo    — built-in simulation that actually runs one real tool
+//   ollama  — Zag-native nonblocking HTTP to 127.0.0.1 (SSE + chunked decode)
+//   https   — native Zag TLS 1.3 client (X25519 + ChaCha20-Poly1305), streamed
+
+@import("tools.zag")
+@import("../zrt/tls.zag")
+
+fn MANAGER_ID() []u8 { return "kory-manager"; }
+fn MAX_TURNS() i32 { return 25; }
+fn TOOL_CTX_CAP() i32 { return 30000; }   // tool output cap re-entering the model
+fn TOOL_WS_CAP() i32 { return 8192; }     // tool output cap over the wire
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// Session title heuristic: first 6 words, capped at 48 chars.
+fn chat_title_from(content: []u8) []u8 {
+    let words: i32 = 0;
+    let i: i32 = 0;
+    let last_end: i32 = 0;
+    let in_word: bool = false;
+    let go: bool = true;
+    while (go && i < content.len && i < 48) {
+        let c: u8 = content[i];
+        if (c == ' ' || c == '\n' || c == '\t') {
+            if (in_word) {
+                words = words + 1;
+                in_word = false;
+                last_end = i;
+                if (words >= 6) { go = false; }
+            }
+        } else {
+            in_word = true;
+        }
+        i = i + 1;
+    }
+    if (go) { last_end = i; }
+    let t: []u8 = str_trim(content[0..last_end]);
+    if (t.len == 0) { return "New Session"; }
+    return _zag_strdup(t);
+}
+
+fn chat_find_run_by_fd(app: *AppState, fd: i64) ?*ChatRun {
+    let i: i32 = 0;
+    while (i < app.*.runs.len) {
+        let r: *ChatRun = get[*ChatRun](app.*.runs, i);
+        if (r.*.fd == fd && r.*.state != 9) { return r; }
+        i = i + 1;
+    }
+    return null;
+}
+
+fn chat_find_run_by_id(app: *AppState, id: []u8) ?*ChatRun {
+    let i: i32 = 0;
+    while (i < app.*.runs.len) {
+        let r: *ChatRun = get[*ChatRun](app.*.runs, i);
+        if (str_eq(r.*.id, id)) { return r; }
+        i = i + 1;
+    }
+    return null;
+}
+
+fn chat_cancel_session(app: *AppState, sid: []u8) void {
+    let i: i32 = 0;
+    while (i < app.*.runs.len) {
+        let r: *ChatRun = get[*ChatRun](app.*.runs, i);
+        if (str_eq(r.*.session_id, sid) && r.*.state != 9) {
+            r.*.cancelled = true;
+        }
+        i = i + 1;
+    }
+}
+
+fn chat_emit_status(srv: *HttpServer, run: *ChatRun, status: []u8) void {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"agentId\":\"");
+    sb_app(&sb, run.*.agent_id);
+    sb_app(&sb, "\",\"status\":\"");
+    sb_app(&sb, status);
+    sb_app(&sb, "\",\"detail\":null}");
+    ws_emit(srv, "agent.status", sb_slice(&sb), run.*.session_id, run.*.agent_id);
+}
+
+fn chat_emit_thought(srv: *HttpServer, run: *ChatRun, thought: []u8, phase: []u8) void {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"thought\":\"");
+    sb_app(&sb, str_escape_json(thought));
+    sb_app(&sb, "\",\"phase\":\"");
+    sb_app(&sb, phase);
+    sb_app(&sb, "\"}");
+    ws_emit(srv, "kory.thought", sb_slice(&sb), run.*.session_id, run.*.agent_id);
+}
+
+// Push text into the run: accumulate + coalesce for stream.delta.
+fn chat_push_text(run: *ChatRun, text: []u8) void {
+    let i: i32 = 0;
+    while (i < text.len) {
+        push[u8](&run.*.text, text[i]);
+        push[u8](&run.*.delta_buf, text[i]);
+        i = i + 1;
+    }
+}
+
+fn chat_flush_delta(srv: *HttpServer, run: *ChatRun, now: i64) void {
+    if (run.*.delta_buf.len == 0) { return; }
+    let chunk: []u8 = run.*.delta_buf.data[0..run.*.delta_buf.len];
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"agentId\":\"");
+    sb_app(&sb, run.*.agent_id);
+    sb_app(&sb, "\",\"content\":\"");
+    sb_app(&sb, str_escape_json(chunk));
+    sb_app(&sb, "\",\"model\":\"");
+    sb_app(&sb, run.*.model);
+    sb_app(&sb, "\"}");
+    ws_emit(srv, "stream.delta", sb_slice(&sb), run.*.session_id, run.*.agent_id);
+    run.*.delta_buf.len = 0;
+    run.*.last_flush_ms = now;
+}
+
+// ── transcript assembly (OpenAI-compatible wire format) ───────────────────────
+
+fn chat_system_prompt() []u8 {
+    return "You are Kory, the Koryphaios manager agent: a pragmatic senior engineer working directly on the user's project. You have tools — bash, read_file, write_file, edit_file, ls, grep, glob — use them to inspect and change the project rather than guessing. Prefer write_file/edit_file over shell redirection for file edits. Be direct and concrete; when a task is done, summarize what you changed.";
+}
+
+// The messages array (system + last-10 history) WITHOUT the trailing ']'.
+// The persisted user turn is already in history, so no separate append.
+fn chat_transcript_open(app: *AppState, sid: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "[{\"role\":\"system\",\"content\":\"");
+    sb_app(&sb, str_escape_json(chat_system_prompt()));
+    sb_app(&sb, "\"}");
+    let raw: []u8 = store_messages_raw(app.*.store, sid);
+    let root: ?*JNode = json_parse(raw);
+    let n: i32 = json_arr_len(root);
+    let start: i32 = 0;
+    if (n > 10) { start = n - 10; }
+    let i: i32 = start;
+    while (i < n) {
+        let m: ?*JNode = json_arr_at(root, i);
+        let role: []u8 = json_str(json_get(m, "role"));
+        if (str_eq(role, "user") || str_eq(role, "assistant")) {
+            let blocks: ?*JNode = json_get(m, "content");
+            let text: []u8 = json_str(json_get(json_arr_at(blocks, 0), "text"));
+            sb_app(&sb, ",{\"role\":\"");
+            sb_app(&sb, role);
+            sb_app(&sb, "\",\"content\":\"");
+            sb_app(&sb, str_escape_json(text));
+            sb_app(&sb, "\"}");
+        }
+        i = i + 1;
+    }
+    return sb_slice(&sb);
+}
+
+// The role-appropriate tool schema for a run.
+fn chat_tools_for(run: *ChatRun) []u8 {
+    if (run.*.critic_of.len > 0) { return tools_critic_defs(); }
+    if (run.*.is_worker) { return tools_worker_defs(); }
+    return tools_openai_defs();
+}
+
+// The full request body for the current transcript, including the tool defs.
+fn chat_openai_body(run: *ChatRun) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"model\":\"");
+    sb_app(&sb, run.*.model);
+    sb_app(&sb, "\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"tools\":");
+    sb_app(&sb, chat_tools_for(run));
+    sb_app(&sb, ",\"messages\":");
+    sb_app(&sb, run.*.transcript);
+    sb_app(&sb, "]}");
+    return sb_slice(&sb);
+}
+
+// ── start a run ───────────────────────────────────────────────────────────────
+
+fn chat_new_run(app: *AppState, s: *Session, p: *Provider, model: []u8, reasoning: []u8) *ChatRun {
+    return new(ChatRun{
+        .id = util_nanoid(8),
+        .session_id = _zag_strdup(s.*.id),
+        .provider = p,
+        .model = _zag_strdup(model),
+        .reasoning = _zag_strdup(reasoning),
+        .state = 0,
+        .fd = 0 - 1,
+        .is_demo = false,
+        .demo_pos = 0,
+        .demo_text = "",
+        .request_body = "",
+        .headers_done = false,
+        .chunked = false,
+        .chunk_left = 0 - 1,
+        .sse_buf = make[u8](256),
+        .text = make[u8](1024),
+        .delta_buf = make[u8](256),
+        .last_flush_ms = 0,
+        .started_ms = util_now_ms(),
+        .tokens_in = 0,
+        .tokens_out = 0,
+        .cancelled = false,
+        .transcript = "",
+        .turn = 0,
+        .tc_id = make[[]u8](2),
+        .tc_name = make[[]u8](2),
+        .tc_args = make[[]u8](2),
+        .finish_reason = "",
+        .is_worker = false,
+        .agent_id = MANAGER_ID(),
+        .label = "Kory",
+        .critic_of = "",
+        .parent_task = "",
+        .pending_workers = 0,
+        .parent_id = "",
+        .worker_call_id = "",
+        .domain = "general",
+        .attempt = 1,
+        .carry = "",
+        .ask_call_id = "",
+        .tls = 0,
+        .tls_off = 0,
+        .http_status = 0,
+    });
+}
+
+fn chat_start(srv: *HttpServer, app: *AppState, s: *Session, content: []u8, model_arg: []u8, reasoning: []u8) void {
+    // resolve provider + model: "provider:model" | bare model | auto
+    let provider: ?*Provider = null;
+    let model: []u8 = "";
+    if (model_arg.len > 0 && !str_eq(model_arg, "auto")) {
+        let sp: SplitResult = str_split_first(model_arg, ':');
+        if (sp.found) {
+            provider = provider_find(app, sp.head);
+            model = sp.tail;
+        } else {
+            let i: i32 = 0;
+            while (i < app.*.providers.len) {
+                let p: *Provider = get[*Provider](app.*.providers, i);
+                if (str_index_of(p.*.model_ids_json, model_arg) >= 0 && p.*.authenticated) {
+                    provider = p;
+                    model = model_arg;
+                }
+                i = i + 1;
+            }
+        }
+    }
+    if (provider) |p0| {
+        if (!p0.*.authenticated) { provider = null; }
+    }
+    if (provider) |_p| { let _v: i32 = 0; } else {
+        provider = provider_first_auth(app);
+        model = "";
+    }
+
+    if (provider) |p| {
+        if (model.len == 0) { model = p.*.default_model; }
+        let run: *ChatRun = chat_new_run(app, s, p, model, reasoning);
+        run.*.transcript = chat_transcript_open(app, run.*.session_id);
+        push[*ChatRun](&app.*.runs, run);
+
+        chat_emit_thought(srv, run, "Breaking down the request and choosing a direct approach.", "analyzing");
+        let rsb: StrBuf = sb_make();
+        sb_app(&rsb, "{\"domain\":\"general\",\"selectedModel\":\"");
+        sb_app(&rsb, model);
+        sb_app(&rsb, "\",\"selectedProvider\":\"");
+        sb_app(&rsb, p.*.name);
+        sb_app(&rsb, "\",\"reasoning\":\"Direct manager turn.\"}");
+        ws_emit(srv, "kory.routing", sb_slice(&rsb), run.*.session_id, run.*.agent_id);
+        chat_emit_status(srv, run, "thinking");
+
+        let _c: i32 = content.len;
+        chat_launch(srv, app, run);
+    } else {
+        ws_emit(srv, "system.error", "{\"error\":\"No model provider is configured. Open Settings and connect a provider before chatting.\"}", s.*.id, "");
+    }
+}
+
+// Launch (or re-launch, for a subsequent turn) the provider request.
+fn chat_launch(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    let p: *Provider = run.*.provider;
+    if (str_eq(p.*.name, "demo")) {
+        chat_start_demo(srv, app, run);
+    } else if (str_eq(p.*.name, "ollama")) {
+        chat_start_ollama(srv, app, run);
+    } else {
+        chat_start_https(srv, app, run);
+    }
+}
+
+// ── demo transport (runs one real tool to exercise the loop) ─────────────────
+
+fn chat_start_demo(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    // Demonstrate the agentic pipeline: emit a real tool call + result, then a
+    // narrative that references it — no LLM required.
+    let call_id: []u8 = "call_demo_ls";
+    ws_emit(srv, "stream.tool_call",
+        _zag_str_concat(_zag_str_concat("{\"agentId\":\"", run.*.agent_id),
+            _zag_str_concat("\",\"toolCall\":{\"id\":\"", _zag_str_concat(call_id, "\",\"name\":\"bash\",\"input\":{\"command\":\"ls -la\"}}}"))),
+        run.*.session_id, run.*.agent_id);
+    let res: ToolResult = tool_execute(app, "bash", json_parse("{\"command\":\"ls -la\"}"));
+    chat_emit_tool_result(srv, run, call_id, "bash", res);
+
+    let snippet: []u8 = res.output;
+    let scap: i32 = snippet.len;
+    if (scap > 300) { scap = 300; }
+
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "I ran `ls -la` in the project and here is what stands out.\n\nThis Koryphaios instance was rewritten from Bun + TypeScript into Zag — a systems language whose compiler proves effect capabilities. The HTTP server, WebSocket layer, JSON codec, SHA-1, base64, this orchestration loop, AND the tool executor you just saw fire are all hand-built over raw Linux syscalls in a single static binary.\n\nWorking directory listing (first lines):\n");
+    sb_app(&sb, snippet[0..scap]);
+    sb_app(&sb, "\n\nConnect a real provider (Ollama runs fully local over the Zag-native HTTP client) and I'll use these same tools — bash, read_file, write_file, edit_file, grep — to actually inspect and change your project.");
+    run.*.demo_text = sb_slice(&sb);
+    run.*.is_demo = true;
+    run.*.state = 3;
+    run.*.tokens_in = 120;
+}
+
+// ── ollama transport (Zag-native nonblocking HTTP) ────────────────────────────
+
+fn chat_ollama_port(p: *Provider) i64 {
+    let url: []u8 = p.*.base_url;
+    if (url.len == 0) { return 11434; }
+    let idx: i32 = str_index_of_from(url, ":", 7);
+    if (idx < 0) { return 11434; }
+    let rest: []u8 = url[idx + 1..url.len];
+    let sp: SplitResult = str_split_first(rest, '/');
+    let port: i64 = str_to_i64(sp.head);
+    if (port <= 0) { return 11434; }
+    return port;
+}
+
+fn chat_start_ollama(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    let body: []u8 = chat_openai_body(run);
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept: text/event-stream\r\nConnection: close\r\nContent-Length: ");
+    sb_int(&sb, body.len as i64);
+    sb_app(&sb, "\r\n\r\n");
+    sb_app(&sb, body);
+    run.*.request_body = sb_slice(&sb);
+
+    let fd: i64 = net_connect_local_nb(chat_ollama_port(run.*.provider));
+    if (fd < 0) {
+        chat_fail(srv, app, run, "Could not reach Ollama. Is it running on the configured base URL?");
+        return;
+    }
+    run.*.fd = fd;
+    run.*.state = 1;
+    let adopted: ?*Conn = http_adopt_client(srv, fd, 2);
+    if (adopted) |c| {
+        let _u: i64 = c.*.fd;
+    } else {
+        chat_fail(srv, app, run, "Failed to register provider connection.");
+    }
+}
+
+// ── native TLS transport (HTTPS providers) ─────────────────────────────────────
+
+// (host, path) for a provider's chat-completions endpoint.
+fn provider_host(name: []u8) []u8 {
+    if (str_eq(name, "openai")) { return "api.openai.com"; }
+    if (str_eq(name, "groq")) { return "api.groq.com"; }
+    if (str_eq(name, "xai")) { return "api.x.ai"; }
+    if (str_eq(name, "deepseek")) { return "api.deepseek.com"; }
+    if (str_eq(name, "anthropic")) { return "api.anthropic.com"; }
+    return "api.openai.com";
+}
+
+fn provider_path(name: []u8) []u8 {
+    if (str_eq(name, "groq")) { return "/openai/v1/chat/completions"; }
+    return "/v1/chat/completions";
+}
+
+// Connect over native TLS 1.3, send the request, and hand the socket to the
+// event loop for streamed decryption. The handshake is blocking (sub-second);
+// the response phase is nonblocking like the Ollama path.
+//
+// Anthropic ships an official OpenAI-compatible endpoint at
+// api.anthropic.com/v1/chat/completions accepting a Bearer key and the standard
+// chat/tools wire format — so one transcript format + one SSE parser cover all.
+fn chat_start_https(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    let p: *Provider = run.*.provider;
+    let host: []u8 = provider_host(p.*.name);
+
+    let maybe: ?*TlsConn = tls_connect(host, 443);
+    let conn_ptr: i64 = 0;
+    let handshook: bool = false;
+    if (maybe) |tc| { conn_ptr = tc as i64; handshook = tc.*.ok; }
+    if (!handshook) {
+        chat_fail(srv, app, run, "Could not establish a secure connection to the provider.");
+        return;
+    }
+    let tc: *TlsConn = conn_ptr as *TlsConn;
+
+    // build the HTTP request
+    let body: []u8 = chat_openai_body(run);
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "POST ");
+    sb_app(&sb, provider_path(p.*.name));
+    sb_app(&sb, " HTTP/1.1\r\nHost: ");
+    sb_app(&sb, host);
+    sb_app(&sb, "\r\nAuthorization: Bearer ");
+    sb_app(&sb, p.*.api_key);
+    if (str_eq(p.*.name, "anthropic")) {
+        sb_app(&sb, "\r\nx-api-key: ");
+        sb_app(&sb, p.*.api_key);
+        sb_app(&sb, "\r\nanthropic-version: 2023-06-01");
+    }
+    sb_app(&sb, "\r\nContent-Type: application/json\r\nAccept: text/event-stream\r\nContent-Length: ");
+    sb_int(&sb, body.len as i64);
+    sb_app(&sb, "\r\nConnection: close\r\n\r\n");
+    sb_app(&sb, body);
+
+    if (!tls_send_app(tc, sb_slice(&sb))) {
+        chat_fail(srv, app, run, "Failed to send the request to the provider.");
+        return;
+    }
+
+    // switch to nonblocking and hand to the event loop
+    net_set_nonblocking(tc.*.fd);
+    run.*.fd = tc.*.fd;
+    run.*.tls = conn_ptr;
+    run.*.tls_off = 0;
+    run.*.state = 2;   // request already sent; awaiting response
+    let adopted: ?*Conn = http_adopt_client(srv, tc.*.fd, 2);
+    if (adopted) |c| {
+        let _u: i64 = c.*.fd;
+    } else {
+        chat_fail(srv, app, run, "Failed to register provider connection.");
+    }
+}
+
+// ── SSE / chunked parsing ─────────────────────────────────────────────────────
+
+// Grow the per-turn tool-call buffers so index `idx` is addressable.
+fn chat_tc_grow(run: *ChatRun, idx: i32) void {
+    while (run.*.tc_id.len <= idx) {
+        push[[]u8](&run.*.tc_id, "");
+        push[[]u8](&run.*.tc_name, "");
+        push[[]u8](&run.*.tc_args, "");
+    }
+}
+
+fn chat_sse_line(srv: *HttpServer, app: *AppState, run: *ChatRun, line: []u8) void {
+    let t: []u8 = str_trim(line);
+    if (!str_starts_with(t, "data:")) { return; }
+    let data: []u8 = str_trim(t[5..t.len]);
+    if (str_eq(data, "[DONE]")) {
+        chat_stream_ended(srv, app, run);
+        return;
+    }
+    let chunk: ?*JNode = json_parse(data);
+    let choices: ?*JNode = json_get(chunk, "choices");
+    if (json_arr_len(choices) > 0) {
+        let choice0: ?*JNode = json_arr_at(choices, 0);
+        let delta: ?*JNode = json_get(choice0, "delta");
+        let piece: []u8 = json_str(json_get(delta, "content"));
+        if (piece.len > 0) {
+            if (run.*.state != 3) {
+                run.*.state = 3;
+                chat_emit_status(srv, run, "streaming");
+            }
+            chat_push_text(run, piece);
+        }
+        // tool call fragments (buffer per index)
+        let tcs: ?*JNode = json_get(delta, "tool_calls");
+        let tcn: i32 = json_arr_len(tcs);
+        let ti: i32 = 0;
+        while (ti < tcn) {
+            let tc: ?*JNode = json_arr_at(tcs, ti);
+            let idx: i32 = json_int(json_get(tc, "index")) as i32;
+            chat_tc_grow(run, idx);
+            let id: []u8 = json_str(json_get(tc, "id"));
+            if (id.len > 0) { set[[]u8](&run.*.tc_id, idx, _zag_strdup(id)); }
+            let fnn: ?*JNode = json_get(tc, "function");
+            let nm: []u8 = json_str(json_get(fnn, "name"));
+            if (nm.len > 0) { set[[]u8](&run.*.tc_name, idx, _zag_strdup(nm)); }
+            let ag: []u8 = json_str(json_get(fnn, "arguments"));
+            if (ag.len > 0) {
+                let cur: []u8 = get[[]u8](run.*.tc_args, idx);
+                set[[]u8](&run.*.tc_args, idx, _zag_str_concat(cur, ag));
+            }
+            ti = ti + 1;
+        }
+        let fin: []u8 = json_str(json_get(choice0, "finish_reason"));
+        if (fin.len > 0) { run.*.finish_reason = _zag_strdup(fin); }
+    }
+    let usage: ?*JNode = json_get(chunk, "usage");
+    if (usage) |u| {
+        let tin: i64 = json_int(json_get(u, "prompt_tokens"));
+        let tout: i64 = json_int(json_get(u, "completion_tokens"));
+        if (tin > 0) { run.*.tokens_in = run.*.tokens_in + tin; }
+        if (tout > 0) { run.*.tokens_out = run.*.tokens_out + tout; }
+    }
+    let errnode: ?*JNode = json_get(chunk, "error");
+    if (errnode) |e| {
+        let emsg: []u8 = json_str(json_get(e, "message"));
+        if (emsg.len == 0) { emsg = "Provider request failed."; }
+        chat_fail(srv, app, run, emsg);
+    }
+}
+
+fn chat_sse_bytes(srv: *HttpServer, app: *AppState, run: *ChatRun, data: []u8) void {
+    let i: i32 = 0;
+    while (i < data.len) {
+        let c: u8 = data[i];
+        if (c == 10) {
+            let line: []u8 = run.*.sse_buf.data[0..run.*.sse_buf.len];
+            chat_sse_line(srv, app, run, line);
+            run.*.sse_buf.len = 0;
+        } else if (c != 13) {
+            push[u8](&run.*.sse_buf, c);
+        }
+        i = i + 1;
+    }
+}
+
+// Parse the HTTP status code out of a "HTTP/1.1 NNN ..." head into run.http_status.
+fn chat_parse_status(run: *ChatRun, head: []u8) void {
+    let sp: i32 = str_index_of(head, " ");
+    if (sp > 0 && sp + 3 < head.len) {
+        let code: i32 = 0;
+        let k: i32 = sp + 1;
+        while (k < head.len && head[k] >= 48 && head[k] <= 57) {
+            code = code * 10 + ((head[k] as i32) - 48);
+            k = k + 1;
+        }
+        run.*.http_status = code;
+    }
+}
+
+// Route body bytes: SSE for a 2xx stream, raw accumulation for an error response.
+fn chat_body_bytes(srv: *HttpServer, app: *AppState, run: *ChatRun, data: []u8) void {
+    if (run.*.http_status >= 400) {
+        let i: i32 = 0;
+        while (i < data.len) { push[u8](&run.*.text, data[i]); i = i + 1; }
+    } else {
+        chat_sse_bytes(srv, app, run, data);
+    }
+}
+
+fn chat_http_bytes(srv: *HttpServer, app: *AppState, run: *ChatRun, conn: *Conn) void {
+    let avail: []u8 = conn.*.inbuf.data[conn.*.in_off..conn.*.inbuf.len];
+    let consumed: i32 = 0;
+    if (!run.*.headers_done) {
+        let hdr_end: i32 = str_index_of(avail, "\r\n\r\n");
+        if (hdr_end < 0) { return; }
+        let head: []u8 = avail[0..hdr_end];
+        chat_parse_status(run, head);
+        let lower: []u8 = str_to_lower(head);
+        if (str_index_of(lower, "transfer-encoding: chunked") >= 0) {
+            run.*.chunked = true;
+            run.*.chunk_left = 0 - 1;
+        }
+        run.*.headers_done = true;
+        consumed = hdr_end + 4;
+        avail = avail[consumed..avail.len];
+    }
+    if (!run.*.chunked) {
+        chat_body_bytes(srv, app, run, avail);
+        consumed = consumed + avail.len;
+    } else {
+        let pos: i32 = 0;
+        let go: bool = true;
+        while (go) {
+            if (run.*.chunk_left < 0) {
+                let rest: []u8 = avail[pos..avail.len];
+                let nl: i32 = str_index_of(rest, "\r\n");
+                if (nl < 0) { go = false; }
+                else {
+                    let szline: []u8 = str_trim(rest[0..nl]);
+                    let sz: i64 = 0;
+                    let k: i32 = 0;
+                    while (k < szline.len) {
+                        let hv: i32 = str_hex_val(szline[k]);
+                        if (hv >= 0) { sz = sz * 16 + (hv as i64); }
+                        k = k + 1;
+                    }
+                    pos = pos + nl + 2;
+                    if (sz == 0) {
+                        chat_stream_ended(srv, app, run);
+                        go = false;
+                    } else {
+                        run.*.chunk_left = sz;
+                    }
+                }
+            } else {
+                let have: i32 = avail.len - pos;
+                if (have <= 0) { go = false; }
+                else {
+                    let take: i32 = have;
+                    if ((run.*.chunk_left as i32) < take) { take = run.*.chunk_left as i32; }
+                    chat_body_bytes(srv, app, run, avail[pos..pos + take]);
+                    pos = pos + take;
+                    run.*.chunk_left = run.*.chunk_left - (take as i64);
+                    if (run.*.chunk_left == 0) {
+                        if (avail.len - pos >= 2) {
+                            pos = pos + 2;
+                            run.*.chunk_left = 0 - 1;
+                        } else {
+                            go = false;
+                        }
+                    }
+                }
+            }
+        }
+        consumed = consumed + pos;
+    }
+    conn.*.in_off = conn.*.in_off + consumed;
+    http_compact(conn);
+}
+
+// TLS path: the bytes http_handle_readable put in conn.inbuf are ENCRYPTED.
+// Feed them through the TLS layer, then parse the decrypted HTTP response from
+// the TlsConn's plaintext buffer (same header/chunk/SSE logic as chat_http_bytes).
+fn chat_https_bytes(srv: *HttpServer, app: *AppState, run: *ChatRun, conn: *Conn) void {
+    let tc: *TlsConn = run.*.tls as *TlsConn;
+    // decrypt: hand the raw encrypted bytes to the TLS record layer
+    let enc: []u8 = conn.*.inbuf.data[conn.*.in_off..conn.*.inbuf.len];
+    if (enc.len > 0) { tls_feed(tc, enc); }
+    conn.*.in_off = conn.*.inbuf.len;
+    http_compact(conn);
+
+    // parse HTTP from the decrypted plaintext accumulated in tc.plain
+    let avail: []u8 = tc.*.plain.data[run.*.tls_off..tc.*.plain.len];
+    let consumed: i32 = 0;
+    if (!run.*.headers_done) {
+        let hdr_end: i32 = str_index_of(avail, "\r\n\r\n");
+        if (hdr_end < 0) { return; }
+        let head: []u8 = avail[0..hdr_end];
+        chat_parse_status(run, head);
+        let lower: []u8 = str_to_lower(head);
+        if (str_index_of(lower, "transfer-encoding: chunked") >= 0) {
+            run.*.chunked = true;
+            run.*.chunk_left = 0 - 1;
+        }
+        run.*.headers_done = true;
+        consumed = hdr_end + 4;
+        avail = avail[consumed..avail.len];
+    }
+    if (!run.*.chunked) {
+        chat_body_bytes(srv, app, run, avail);
+        consumed = consumed + avail.len;
+    } else {
+        let pos: i32 = 0;
+        let go: bool = true;
+        while (go) {
+            if (run.*.chunk_left < 0) {
+                let rest: []u8 = avail[pos..avail.len];
+                let nl: i32 = str_index_of(rest, "\r\n");
+                if (nl < 0) { go = false; }
+                else {
+                    let szline: []u8 = str_trim(rest[0..nl]);
+                    let sz: i64 = 0;
+                    let k: i32 = 0;
+                    while (k < szline.len) {
+                        let hv: i32 = str_hex_val(szline[k]);
+                        if (hv >= 0) { sz = sz * 16 + (hv as i64); }
+                        k = k + 1;
+                    }
+                    pos = pos + nl + 2;
+                    if (sz == 0) {
+                        chat_stream_ended(srv, app, run);
+                        go = false;
+                    } else {
+                        run.*.chunk_left = sz;
+                    }
+                }
+            } else {
+                let have: i32 = avail.len - pos;
+                if (have <= 0) { go = false; }
+                else {
+                    let take: i32 = have;
+                    if ((run.*.chunk_left as i32) < take) { take = run.*.chunk_left as i32; }
+                    chat_body_bytes(srv, app, run, avail[pos..pos + take]);
+                    pos = pos + take;
+                    run.*.chunk_left = run.*.chunk_left - (take as i64);
+                    if (run.*.chunk_left == 0) {
+                        if (avail.len - pos >= 2) {
+                            pos = pos + 2;
+                            run.*.chunk_left = 0 - 1;
+                        } else {
+                            go = false;
+                        }
+                    }
+                }
+            }
+        }
+        consumed = consumed + pos;
+    }
+    run.*.tls_off = run.*.tls_off + consumed;
+}
+
+// ── tool execution + turn continuation ────────────────────────────────────────
+
+fn chat_emit_tool_result(srv: *HttpServer, run: *ChatRun, call_id: []u8, name: []u8, res: ToolResult) void {
+    let out: []u8 = res.output;
+    let cap: i32 = out.len;
+    let truncated: bool = false;
+    if (cap > TOOL_WS_CAP()) { cap = TOOL_WS_CAP(); truncated = true; }
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"agentId\":\"");
+    sb_app(&sb, run.*.agent_id);
+    sb_app(&sb, "\",\"toolResult\":{\"callId\":\"");
+    sb_app(&sb, call_id);
+    sb_app(&sb, "\",\"name\":\"");
+    sb_app(&sb, name);
+    sb_app(&sb, "\",\"output\":\"");
+    sb_app(&sb, str_escape_json(out[0..cap]));
+    sb_app(&sb, "\",\"isError\":");
+    if (res.is_error) { sb_app(&sb, "true"); } else { sb_app(&sb, "false"); }
+    sb_app(&sb, ",\"truncated\":");
+    if (truncated) { sb_app(&sb, "true"); } else { sb_app(&sb, "false"); }
+    sb_app(&sb, ",\"durationMs\":");
+    sb_int(&sb, res.duration_ms);
+    sb_app(&sb, "}}");
+    ws_emit(srv, "stream.tool_result", sb_slice(&sb), run.*.session_id, run.*.agent_id);
+}
+
+// Called when a provider stream for the current turn completes.
+fn chat_stream_ended(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    if (run.*.state == 9) { return; }
+    let now: i64 = util_now_ms();
+    chat_flush_delta(srv, run, now);
+    // close this turn's transport
+    if (run.*.fd >= 0) {
+        let maybe: ?*Conn = http_conn_at(srv, run.*.fd);
+        if (maybe) |c| { http_conn_close(srv, c); }
+        run.*.fd = 0 - 1;
+    }
+    // provider returned an HTTP error — surface the error body, don't continue.
+    if (run.*.http_status >= 400) {
+        let body: []u8 = run.*.text.data[0..run.*.text.len];
+        let emsg: []u8 = json_str(json_get(json_get(json_parse(body), "error"), "message"));
+        if (emsg.len == 0) {
+            let cap: i32 = body.len;
+            if (cap > 300) { cap = 300; }
+            emsg = body[0..cap];
+        }
+        run.*.text.len = 0;   // don't persist the error body as an assistant message
+        chat_fail(srv, app, run, _zag_str_concat("Provider error ", _zag_str_concat(_zag_i64_to_str(run.*.http_status as i64), _zag_str_concat(": ", emsg))));
+        return;
+    }
+    // did the model request tools this turn?
+    let have_tools: bool = run.*.tc_name.len > 0;
+    // a tool row is only real if it got a name
+    let real_tools: i32 = 0;
+    let ci: i32 = 0;
+    while (ci < run.*.tc_name.len) {
+        if (get[[]u8](run.*.tc_name, ci).len > 0) { real_tools = real_tools + 1; }
+        ci = ci + 1;
+    }
+    if (have_tools && real_tools > 0 && !run.*.cancelled && run.*.turn < MAX_TURNS()) {
+        chat_run_tools_and_continue(srv, app, run);
+    } else {
+        chat_finalize(srv, app, run);
+    }
+}
+
+// Emit a stream.tool_call event for a call.
+fn chat_emit_tool_call(srv: *HttpServer, run: *ChatRun, id: []u8, name: []u8, args: []u8) void {
+    let csb: StrBuf = sb_make();
+    sb_app(&csb, "{\"agentId\":\"");
+    sb_app(&csb, run.*.agent_id);
+    sb_app(&csb, "\",\"toolCall\":{\"id\":\"");
+    sb_app(&csb, id);
+    sb_app(&csb, "\",\"name\":\"");
+    sb_app(&csb, name);
+    sb_app(&csb, "\",\"input\":");
+    sb_app(&csb, args);
+    sb_app(&csb, "}}");
+    ws_emit(srv, "stream.tool_call", sb_slice(&csb), run.*.session_id, run.*.agent_id);
+}
+
+// Reset per-turn state and launch the next provider turn.
+fn chat_resume_next_turn(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    run.*.turn = run.*.turn + 1;
+    run.*.text.len = 0;
+    run.*.sse_buf.len = 0;
+    run.*.delta_buf.len = 0;
+    run.*.headers_done = false;
+    run.*.chunked = false;
+    run.*.chunk_left = 0 - 1;
+    run.*.finish_reason = "";
+    run.*.tc_id = make[[]u8](2);
+    run.*.tc_name = make[[]u8](2);
+    run.*.tc_args = make[[]u8](2);
+    run.*.state = 0;
+    chat_launch(srv, app, run);
+}
+
+fn chat_run_tools_and_continue(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    chat_emit_status(srv, run, "tool_calling");
+    // 1. append the assistant(tool_calls) message to the transcript
+    let tsb: StrBuf = sb_make();
+    sb_app(&tsb, run.*.transcript);
+    sb_app(&tsb, ",{\"role\":\"assistant\",\"content\":");
+    let atext: []u8 = run.*.text.data[0..run.*.text.len];
+    if (atext.len == 0) {
+        sb_app(&tsb, "null");
+    } else {
+        sb_ch(&tsb, '"' as u8);
+        sb_app(&tsb, str_escape_json(atext));
+        sb_ch(&tsb, '"' as u8);
+    }
+    sb_app(&tsb, ",\"tool_calls\":[");
+    let n: i32 = run.*.tc_name.len;
+    let i: i32 = 0;
+    let emitted: i32 = 0;
+    while (i < n) {
+        let nm: []u8 = get[[]u8](run.*.tc_name, i);
+        if (nm.len > 0) {
+            let id: []u8 = get[[]u8](run.*.tc_id, i);
+            if (id.len == 0) { id = _zag_str_concat("call_", _zag_i64_to_str(i as i64)); }
+            let args: []u8 = get[[]u8](run.*.tc_args, i);
+            if (args.len == 0) { args = "{}"; }
+            if (emitted > 0) { sb_ch(&tsb, ',' as u8); }
+            sb_app(&tsb, "{\"id\":\"");
+            sb_app(&tsb, id);
+            sb_app(&tsb, "\",\"type\":\"function\",\"function\":{\"name\":\"");
+            sb_app(&tsb, nm);
+            sb_app(&tsb, "\",\"arguments\":\"");
+            sb_app(&tsb, str_escape_json(args));
+            sb_app(&tsb, "\"}}");
+            emitted = emitted + 1;
+        }
+        i = i + 1;
+    }
+    sb_app(&tsb, "]}");
+    // set the transcript now; sync tools and worker completions append onto it
+    run.*.transcript = sb_slice(&tsb);
+
+    // 2. dispatch each call: delegation spawns a worker (deferred); everything
+    //    else executes synchronously and appends its result immediately.
+    let can_delegate: bool = !run.*.is_worker && run.*.critic_of.len == 0;
+    i = 0;
+    while (i < n) {
+        let nm: []u8 = get[[]u8](run.*.tc_name, i);
+        if (nm.len > 0) {
+            let id: []u8 = get[[]u8](run.*.tc_id, i);
+            if (id.len == 0) { id = _zag_str_concat("call_", _zag_i64_to_str(i as i64)); }
+            let args: []u8 = get[[]u8](run.*.tc_args, i);
+            if (args.len == 0) { args = "{}"; }
+            chat_emit_tool_call(srv, run, id, nm, args);
+
+            if ((str_eq(nm, "delegate_to_worker") || str_eq(nm, "delegate_to_jules")) && can_delegate) {
+                let a: ?*JNode = json_parse(args);
+                let domain: []u8 = json_str(json_get(a, "domain"));
+                if (domain.len == 0) { domain = "general"; }
+                let task: []u8 = json_str(json_get(a, "task"));
+                if (task.len == 0) { task = json_str(json_get(a, "prompt")); }
+                if (task.len == 0) { task = json_str(json_get(a, "description")); }
+                run.*.pending_workers = run.*.pending_workers + 1;
+                spawn_worker(srv, app, run, domain, task, id, 1);
+            } else if (str_eq(nm, "ask_user") && can_delegate && run.*.ask_call_id.len == 0) {
+                // pause the run and ask the user; user_input resumes it
+                let a: ?*JNode = json_parse(args);
+                let q: []u8 = json_str(json_get(a, "question"));
+                let opts: ?*JNode = json_get(a, "options");
+                let qsb: StrBuf = sb_make();
+                sb_app(&qsb, "{\"question\":\"");
+                sb_app(&qsb, str_escape_json(q));
+                sb_app(&qsb, "\",\"options\":");
+                if (json_arr_len(opts) > 0) { sb_app(&qsb, args_options_json(opts)); }
+                else { sb_app(&qsb, "[]"); }
+                sb_app(&qsb, ",\"allowOther\":true}");
+                ws_emit(srv, "kory.ask_user", sb_slice(&qsb), run.*.session_id, run.*.agent_id);
+                run.*.ask_call_id = _zag_strdup(id);
+            } else {
+                let res: ToolResult = ToolResult{ .output = "", .is_error = false, .duration_ms = 0 };
+                if (run.*.critic_of.len > 0 && !tool_is_readonly(nm)) {
+                    res = tool_err(_zag_str_concat("critic is read-only; refused tool: ", nm));
+                } else {
+                    res = tool_execute(app, nm, json_parse(args));
+                }
+                chat_emit_tool_result(srv, run, id, nm, res);
+                archive_append(app, run.*.session_id, "tool", nm, res.output);
+                let out: []u8 = res.output;
+                let ocap: i32 = out.len;
+                if (ocap > TOOL_CTX_CAP()) { ocap = TOOL_CTX_CAP(); }
+                let asb: StrBuf = sb_make();
+                sb_app(&asb, run.*.transcript);
+                sb_app(&asb, ",{\"role\":\"tool\",\"tool_call_id\":\"");
+                sb_app(&asb, id);
+                sb_app(&asb, "\",\"content\":\"");
+                sb_app(&asb, str_escape_json(out[0..ocap]));
+                sb_app(&asb, "\"}");
+                run.*.transcript = sb_slice(&asb);
+            }
+        }
+        i = i + 1;
+    }
+
+    // 3. wait on the user (state 6), on workers (state 5), or continue now.
+    if (run.*.ask_call_id.len > 0) {
+        run.*.state = 6;
+        chat_emit_status(srv, run, "waiting_user");
+    } else if (run.*.pending_workers > 0) {
+        run.*.state = 5;
+        chat_emit_status(srv, run, "waiting_user");
+    } else {
+        chat_emit_thought(srv, run, "Reviewing tool results and continuing.", "synthesizing");
+        chat_resume_next_turn(srv, app, run);
+    }
+}
+
+// Serialize a JSON array of option strings (re-emit the parsed node's strings).
+fn args_options_json(opts: ?*JNode) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '[' as u8);
+    let n: i32 = json_arr_len(opts);
+    let i: i32 = 0;
+    while (i < n) {
+        if (i > 0) { sb_ch(&sb, ',' as u8); }
+        sb_ch(&sb, '"' as u8);
+        sb_app(&sb, str_escape_json(json_str(json_arr_at(opts, i))));
+        sb_ch(&sb, '"' as u8);
+        i = i + 1;
+    }
+    sb_ch(&sb, ']' as u8);
+    return sb_slice(&sb);
+}
+
+// Resume a run paused on ask_user, injecting the user's answer as the tool result.
+fn chat_answer_user(srv: *HttpServer, app: *AppState, sid: []u8, answer: []u8) void {
+    let i: i32 = 0;
+    while (i < app.*.runs.len) {
+        let run: *ChatRun = get[*ChatRun](app.*.runs, i);
+        if (str_eq(run.*.session_id, sid) && run.*.state == 6 && run.*.ask_call_id.len > 0) {
+            let asb: StrBuf = sb_make();
+            sb_app(&asb, run.*.transcript);
+            sb_app(&asb, ",{\"role\":\"tool\",\"tool_call_id\":\"");
+            sb_app(&asb, run.*.ask_call_id);
+            sb_app(&asb, "\",\"content\":\"");
+            sb_app(&asb, str_escape_json(answer));
+            sb_app(&asb, "\"}");
+            run.*.transcript = sb_slice(&asb);
+            run.*.ask_call_id = "";
+            chat_emit_status(srv, run, "streaming");
+            chat_resume_next_turn(srv, app, run);
+        }
+        i = i + 1;
+    }
+}
+
+// ── finalize ──────────────────────────────────────────────────────────────────
+
+fn chat_usage_event(srv: *HttpServer, run: *ChatRun) void {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"agentId\":\"");
+    sb_app(&sb, run.*.agent_id);
+    sb_app(&sb, "\",\"model\":\"");
+    sb_app(&sb, run.*.model);
+    sb_app(&sb, "\",\"provider\":\"");
+    sb_app(&sb, run.*.provider.*.name);
+    sb_app(&sb, "\",\"tokensIn\":");
+    sb_int(&sb, run.*.tokens_in);
+    sb_app(&sb, ",\"tokensOut\":");
+    sb_int(&sb, run.*.tokens_out);
+    sb_app(&sb, ",\"tokensUsed\":");
+    sb_int(&sb, run.*.tokens_in + run.*.tokens_out);
+    sb_app(&sb, ",\"usageKnown\":true,\"contextKnown\":true,\"contextSource\":\"live\",\"contextWindow\":128000,\"breakdown\":{\"system\":64,\"memory\":0,\"tools\":0,\"chat\":");
+    sb_int(&sb, run.*.tokens_in);
+    sb_app(&sb, "}}");
+    ws_emit(srv, "stream.usage", sb_slice(&sb), run.*.session_id, run.*.agent_id);
+}
+
+fn chat_finalize(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    if (run.*.state == 9) { return; }
+    let now: i64 = util_now_ms();
+    chat_flush_delta(srv, run, now);
+    run.*.state = 9;
+    if (run.*.fd >= 0) {
+        let maybe: ?*Conn = http_conn_at(srv, run.*.fd);
+        if (maybe) |c| { http_conn_close(srv, c); }
+        run.*.fd = 0 - 1;
+    }
+
+    // workers/critics report back to the manager rather than persisting a turn.
+    if (run.*.is_worker) {
+        chat_worker_finished(srv, app, run);
+        return;
+    }
+
+    let text: []u8 = run.*.text.data[0..run.*.text.len];
+    let final_text: []u8 = text;
+    if (run.*.cancelled) { final_text = _zag_str_concat(text, "\n\nStopped by user."); }
+    if (final_text.len == 0) { final_text = "(model returned an empty response)"; }
+    if (run.*.tokens_out == 0) { run.*.tokens_out = (final_text.len as i64) / 4; }
+    if (run.*.tokens_in == 0) { run.*.tokens_in = 200; }
+
+    let msg: []u8 = message_json(util_nanoid(12), run.*.session_id, "assistant", final_text,
+        run.*.model, run.*.provider.*.name, run.*.tokens_in, run.*.tokens_out, 0, now);
+    store_append_message(app.*.store, run.*.session_id, msg);
+
+    let maybe_s: ?*Session = store_find(app.*.store, run.*.session_id);
+    if (maybe_s) |s| {
+        s.*.message_count = s.*.message_count + 1;
+        s.*.tokens_in = s.*.tokens_in + run.*.tokens_in;
+        s.*.tokens_out = s.*.tokens_out + run.*.tokens_out;
+        store_touch(app.*.store, s);
+        let sb: StrBuf = sb_make();
+        session_json(s, &sb);
+        ws_emit(srv, "session.updated", _zag_str_concat(_zag_str_concat("{\"session\":", sb_slice(&sb)), "}"), "", "");
+    }
+
+    chat_usage_event(srv, run);
+    chat_emit_status(srv, run, "done");
+}
+
+fn chat_fail(srv: *HttpServer, app: *AppState, run: *ChatRun, error_msg: []u8) void {
+    if (run.*.state == 9) { return; }
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"agentId\":\"");
+    sb_app(&sb, run.*.agent_id);
+    sb_app(&sb, "\",\"error\":\"");
+    sb_app(&sb, str_escape_json(error_msg));
+    sb_app(&sb, "\"}");
+    ws_emit(srv, "agent.error", sb_slice(&sb), run.*.session_id, run.*.agent_id);
+    chat_finalize(srv, app, run);
+}
+
+// Worker/critic completion: emit closing events, then hand to the multi-agent
+// module (worker.zag defines worker_on_finished; late-bound at link).
+fn chat_worker_finished(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    chat_usage_event(srv, run);
+    chat_emit_status(srv, run, "done");
+    worker_on_finished(srv, app, run);
+}
+
+// ── zrt callbacks: outbound socket events + tick ─────────────────────────────
+
+fn app_client_writable(srv: *HttpServer, conn: *Conn) void {
+    let app: *AppState = app_of(srv);
+    let maybe: ?*ChatRun = chat_find_run_by_fd(app, conn.*.fd);
+    if (maybe) |run| {
+        if (run.*.state == 1 && run.*.request_body.len > 0) {
+            http_out(conn, run.*.request_body);
+            run.*.request_body = "";
+            run.*.state = 2;
+            http_flush(srv, conn);
+        }
+    }
+}
+
+fn app_client_readable(srv: *HttpServer, conn: *Conn) void {
+    let app: *AppState = app_of(srv);
+    let maybe: ?*ChatRun = chat_find_run_by_fd(app, conn.*.fd);
+    if (maybe) |run| {
+        if (run.*.tls != 0) {
+            chat_https_bytes(srv, app, run, conn);
+        } else {
+            chat_http_bytes(srv, app, run, conn);
+        }
+    }
+}
+
+fn ws_heartbeat(srv: *HttpServer, app: *AppState, now_ms: i64) void {
+    if (now_ms - app.*.last_ping_ms < 30000) { return; }
+    app.*.last_ping_ms = now_ms;
+    let fd: i32 = 0;
+    while (fd < HTTP_MAXFD()) {
+        let raw: i64 = srv.*.conns[fd];
+        if (raw != 0) {
+            let conn: *Conn = raw as *Conn;
+            if (conn.*.alive && conn.*.kind == 1) {
+                ws_send_ping(srv, conn);
+            }
+        }
+        fd = fd + 1;
+    }
+}
+
+fn app_tick(srv: *HttpServer, now_ms: i64) void {
+    let app: *AppState = app_of(srv);
+    ws_heartbeat(srv, app, now_ms);
+    proc_reap(srv, app);
+    let i: i32 = 0;
+    while (i < app.*.runs.len) {
+        let run: *ChatRun = get[*ChatRun](app.*.runs, i);
+        if (run.*.state != 9) {
+            if (run.*.cancelled && !run.*.is_demo && run.*.state < 2) {
+                chat_finalize(srv, app, run);
+            } else if (run.*.is_demo) {
+                chat_tick_demo(srv, app, run);
+            } else if (run.*.state >= 2 && (now_ms - run.*.started_ms) > 600000) {
+                chat_fail(srv, app, run, "Provider stream timed out.");
+            }
+            if (run.*.state != 9 && run.*.delta_buf.len > 0) {
+                let wall: i64 = util_now_ms();
+                if (wall - run.*.last_flush_ms >= 50) {
+                    chat_flush_delta(srv, run, wall);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if (app.*.runs.len > 64) {
+        let keep: ArrayList[*ChatRun] = make[*ChatRun](8);
+        let j: i32 = 0;
+        while (j < app.*.runs.len) {
+            let r: *ChatRun = get[*ChatRun](app.*.runs, j);
+            if (r.*.state != 9) { push[*ChatRun](&keep, r); }
+            j = j + 1;
+        }
+        app.*.runs = keep;
+    }
+}
+
+fn chat_tick_demo(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    if (run.*.state != 3) { return; }
+    if (run.*.demo_pos == 0) { chat_emit_status(srv, run, "streaming"); }
+    let text: []u8 = run.*.demo_text;
+    let emitted: i32 = 0;
+    let go: bool = true;
+    while (go && run.*.demo_pos < text.len) {
+        let c: u8 = text[run.*.demo_pos];
+        push[u8](&run.*.text, c);
+        push[u8](&run.*.delta_buf, c);
+        run.*.demo_pos = run.*.demo_pos + 1;
+        if (c == ' ' || c == '\n') { emitted = emitted + 1; }
+        if (emitted >= 10) { go = false; }
+    }
+    if (run.*.demo_pos >= text.len) {
+        run.*.tokens_out = (text.len as i64) / 4;
+        chat_finalize(srv, app, run);
+    }
+}
+

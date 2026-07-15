@@ -1,0 +1,6 @@
+@import("../../zagstd/rt.zag")
+// calls app_handle which is NOT defined here nor imported — provided by another file merged at top level
+fn engine_run() void {
+    let r: i32 = app_handle(21);
+    _zag_println(_zag_i64_to_str(r as i64));
+}

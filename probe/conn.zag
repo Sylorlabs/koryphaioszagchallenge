@@ -1,0 +1,38 @@
+@import("../zagstd/rt.zag")
+@import("../zagstd/list.zag") as list
+
+struct Conn {
+    fd: i64,
+    inbuf: list.ArrayList[u8],
+    state: i32,
+}
+
+fn conn_table_make(cap: i32) *i64 {
+    let raw: *i8 = _zag_malloc(cap * 8);
+    let t: *i64 = raw as *i64;
+    let i: i32 = 0;
+    while (i < cap) { t[i] = 0; i = i + 1; }
+    return t;
+}
+
+fn main() i32 {
+    // pointer table of Conn*
+    let table: *i64 = conn_table_make(64);
+    let c: *Conn = new(Conn{ .fd = 7, .inbuf = list.make[u8](16), .state = 0 });
+    table[7] = c as i64;
+
+    // fetch back and mutate ArrayList field through the pointer
+    let got: *Conn = table[7] as *Conn;
+    list.push[u8](&got.*.inbuf, 90);
+    list.push[u8](&got.*.inbuf, 65);
+    list.push[u8](&got.*.inbuf, 71);
+    let s: []u8 = got.*.inbuf.data[0..got.*.inbuf.len];
+    _zag_println(s);                       // ZAG
+    _zag_println(_zag_i64_to_str(got.*.fd)); // 7
+
+    // reset reuse
+    got.*.inbuf.len = 0;
+    list.push[u8](&got.*.inbuf, 33);
+    _zag_println(_zag_i64_to_str(got.*.inbuf.len as i64)); // 1
+    return 0;
+}

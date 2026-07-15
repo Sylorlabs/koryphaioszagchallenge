@@ -1,0 +1,61 @@
+@import("../zagstd/rt.zag")
+@import("../zagstd/list.zag") as list
+
+// tagged union for JSON-like values
+union JVal {
+    num: i64,
+    str: []u8,
+    flag: bool,
+}
+
+fn show(v: JVal) void {
+    switch (v) {
+        .num => |n| { _zag_println(_zag_str_concat("num:", _zag_i64_to_str(n))); }
+        .str => |s| { _zag_println(_zag_str_concat("str:", s)); }
+        .flag => |b| { if (b) { _zag_println("flag:true"); } else { _zag_println("flag:false"); } }
+    }
+}
+
+// recursion
+fn fib(n: i32) i32 {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+// optionals
+fn find(x: i32) ?i32 {
+    if (x > 0) { return x * 2; }
+    return null;
+}
+
+// error unions
+error ParseErr { Bad, Eof }
+fn parse_num(s: []u8) !i64 {
+    if (s.len == 0) { return error.Eof; }
+    return _zag_str_to_i64(s);
+}
+
+// u64 wrap-mask arithmetic (SHA-1 style)
+fn rotl32(x: i64, n: i32) i64 {
+    let m: i64 = 4294967295;
+    let left: i64 = (x << n) & m;
+    let right: i64 = x >> (32 - n);
+    return (left | right) & m;
+}
+
+fn main() i32 {
+    show(JVal{ .num = 42 });
+    show(JVal{ .str = "hey" });
+    show(JVal{ .flag = true });
+    _zag_println(_zag_i64_to_str(fib(15) as i64));
+    if (find(5)) |v| { _zag_println(_zag_i64_to_str(v as i64)); }
+    let o: ?i32 = find(0-1);
+    let fallback: i32 = o orelse 99;
+    _zag_println(_zag_i64_to_str(fallback as i64));
+    let r: i64 = parse_num("123") catch 0-1;
+    _zag_println(_zag_i64_to_str(r));
+    let e: i64 = parse_num("") catch 0-1;
+    _zag_println(_zag_i64_to_str(e));
+    _zag_println(_zag_i64_to_str(rotl32(2882400001, 8)));
+    return 0;
+}

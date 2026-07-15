@@ -1,0 +1,42 @@
+@import("../src/backend/tools.zag")
+
+// stubs for the http/ws app callbacks (unused in this unit test)
+fn app_handle(srv: *HttpServer, conn: *Conn, req: *Request) void { let _u: i32 = conn.*.kind; }
+fn app_ws_frame(srv: *HttpServer, conn: *Conn, opcode: i32, payload: []u8) void { let _u: i32 = opcode; }
+fn app_conn_closed(srv: *HttpServer, conn: *Conn) void { let _u: i32 = conn.*.kind; }
+fn app_client_readable(srv: *HttpServer, conn: *Conn) void { let _u: i32 = conn.*.kind; }
+fn app_client_writable(srv: *HttpServer, conn: *Conn) void { let _u: i32 = conn.*.kind; }
+fn app_tick(srv: *HttpServer, now_ms: i64) void { let _u: i64 = now_ms; }
+
+fn show(r: ToolResult) void {
+    if (r.is_error) { _zag_print("ERR: "); } else { _zag_print("OK: "); }
+    let out: []u8 = r.output;
+    let cap: i32 = out.len;
+    if (cap > 200) { cap = 200; }
+    _zag_println(out[0..cap]);
+}
+
+fn main() i32 {
+    let app: *AppState = new(AppState{
+        .store = store_open("/tmp/claude-1000/tooltest-data"),
+        .providers = make[*Provider](1),
+        .runs = make[*ChatRun](1),
+        .boot_secret = "x",
+        .data_dir = "/tmp/claude-1000/tooltest-data",
+        .static_dir = ".",
+        .project_name = "test",
+        .started_ms = 0,
+        .version = "1.0.0",
+        .last_ping_ms = 0,
+    });
+    show(tool_execute(app, "write_file", json_parse("{\"path\":\"/tmp/claude-1000/tt.txt\",\"content\":\"hello world\\nsecond line\"}")));
+    show(tool_execute(app, "read_file", json_parse("{\"path\":\"/tmp/claude-1000/tt.txt\"}")));
+    show(tool_execute(app, "edit_file", json_parse("{\"path\":\"/tmp/claude-1000/tt.txt\",\"old_str\":\"world\",\"new_str\":\"ZAG\"}")));
+    show(tool_execute(app, "read_file", json_parse("{\"path\":\"/tmp/claude-1000/tt.txt\"}")));
+    show(tool_execute(app, "bash", json_parse("{\"command\":\"echo bashworks\"}")));
+    show(tool_execute(app, "grep", json_parse("{\"pattern\":\"ZAG\",\"path\":\"/tmp/claude-1000/tt.txt\"}")));
+    show(tool_execute(app, "edit_file", json_parse("{\"path\":\"/tmp/claude-1000/tt.txt\",\"old_str\":\"nope\",\"new_str\":\"x\"}")));
+    show(tool_execute(app, "unknown_tool", json_parse("{}")));
+    _zag_print("defs-len="); _zag_println(_zag_i64_to_str(tools_openai_defs().len as i64));
+    return 0;
+}

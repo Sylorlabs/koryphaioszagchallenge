@@ -1,0 +1,182 @@
+// backend/util.zag — OS utilities: wall-clock time, random ids, atomic files.
+
+@import("../zrt/json.zag")
+@import("../zrt/bytes.zag")
+
+// clock_gettime(CLOCK_REALTIME=0) → epoch milliseconds (wall clock; the API
+// contract uses epoch ms everywhere).
+fn util_now_ms() i64 {
+    let ts: *i8 = _zag_malloc(16);
+    _zag_raw_syscall(228, 0, ts as i64, 0, 0, 0, 0);
+    let sec: i64 = rd_u64le(ts, 0);
+    let nsec: i64 = rd_u64le(ts, 8);
+    _zag_free(ts);
+    return sec * 1000 + nsec / 1000000;
+}
+
+// getrandom(2) fill.
+fn util_random_bytes(n: i32) []u8 {
+    let raw: *i8 = _zag_malloc(n);
+    _zag_raw_syscall(318, raw as i64, n as i64, 0, 0, 0, 0);
+    return raw[0..n];
+}
+
+// nanoid-style id over the url-safe alphabet A-Za-z0-9_- .
+fn util_nanoid(n: i32) []u8 {
+    let alphabet: []u8 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    let rnd: []u8 = util_random_bytes(n);
+    let raw: *i8 = _zag_malloc(n);
+    let out: *u8 = raw as *u8;
+    let i: i32 = 0;
+    while (i < n) {
+        out[i] = alphabet[(rnd[i] as i32) & 63];
+        i = i + 1;
+    }
+    return out[0..n];
+}
+
+// NUL-terminated copy of a slice, for syscalls that take C paths.
+fn util_cpath(s: []u8) *i8 {
+    let raw: *i8 = _zag_malloc(s.len + 1);
+    _zag_memcpy(raw, _zag_slice_ptr(s), s.len);
+    raw[s.len] = 0 as i8;
+    return raw;
+}
+
+// rename(2) — atomic replace within a filesystem.
+fn util_rename(from: []u8, to: []u8) i64 {
+    let a: *i8 = util_cpath(from);
+    let b: *i8 = util_cpath(to);
+    let rc: i64 = _zag_raw_syscall(82, a as i64, b as i64, 0, 0, 0, 0);
+    _zag_free(a);
+    _zag_free(b);
+    return rc;
+}
+
+// chmod(2).
+fn util_chmod(path: []u8, mode: i64) i64 {
+    let p: *i8 = util_cpath(path);
+    let rc: i64 = _zag_raw_syscall(90, p as i64, mode, 0, 0, 0, 0);
+    _zag_free(p);
+    return rc;
+}
+
+// mkdir(2) — 0755 = 493. Ignores EEXIST.
+fn util_mkdir(path: []u8) void {
+    let p: *i8 = util_cpath(path);
+    _zag_raw_syscall(83, p as i64, 493, 0, 0, 0, 0);
+    _zag_free(p);
+}
+
+// unlink(2).
+fn util_unlink(path: []u8) void {
+    let p: *i8 = util_cpath(path);
+    _zag_raw_syscall(87, p as i64, 0, 0, 0, 0, 0);
+    _zag_free(p);
+}
+
+// getpid(2).
+fn util_getpid() i64 {
+    return _zag_raw_syscall(39, 0, 0, 0, 0, 0, 0);
+}
+
+// Atomic write: write to path.tmp then rename over path.
+fn util_write_atomic(path: []u8, content: []u8) bool {
+    let tmp: []u8 = _zag_str_concat(path, ".tmp");
+    if (_zag_write_file(tmp, content) != 0) { return false; }
+    return util_rename(tmp, path) == 0;
+}
+
+// Read a file; returns "" when missing/unreadable.
+fn util_read_or_empty(path: []u8) []u8 {
+    if (_zag_file_exists(path) == 0) { return ""; }
+    let content: []u8 = _zag_read_file(path);
+    if (content.len < 0) { return ""; }
+    return content;
+}
+
+// Capture a shell command's stdout via the native _zag_exec_capture primitive.
+//
+// This primitive was added to znc's x86-64 codegen for this project
+// (selfhost/native/ncodegen.zag, RT_EXECCAP: pipe2 + fork + dup2 + execve +
+// grow-buffer read loop). The `2>/dev/null` keeps stderr off the captured
+// stream, matching the original TypeScript behavior.
+fn util_exec_capture(cmd: []u8) []u8 {
+    return _zag_exec_capture(_zag_str_concat("( ", _zag_str_concat(cmd, " ) 2>/dev/null")));
+}
+
+// Build an envp pointer array from the current environment (a few key vars).
+// Terminated with a NULL pointer. Used by native_spawn.
+fn spawn_envp_add(arr: *i64, idx: i32, name: []u8) i32 {
+    let val: []u8 = _zag_getenv(name);
+    if (val.len == 0) { return idx; }
+    let entry: []u8 = _zag_str_concat(name, _zag_str_concat("=", val));
+    arr[idx] = util_cpath(entry) as i64;
+    return idx + 1;
+}
+
+fn spawn_build_envp() *i64 {
+    let arr: *i64 = _zag_malloc(16 * 8) as *i64;
+    let n: i32 = 0;
+    n = spawn_envp_add(arr, n, "PATH");
+    n = spawn_envp_add(arr, n, "HOME");
+    n = spawn_envp_add(arr, n, "USER");
+    n = spawn_envp_add(arr, n, "LANG");
+    n = spawn_envp_add(arr, n, "TERM");
+    n = spawn_envp_add(arr, n, "PWD");
+    n = spawn_envp_add(arr, n, "SHELL");
+    n = spawn_envp_add(arr, n, "KORYPHAIOS_DATA_DIR");
+    arr[n] = 0;
+    return arr;
+}
+
+// Spawn a detached background process running `sh -c cmd`, with stdout+stderr
+// redirected to out_file and stdin from /dev/null. Pure Zag: fork + setsid +
+// open + dup2 + execve via raw syscalls (no shell wrapper, no `& echo $!`).
+// Returns the child pid, or -1 on fork failure.
+fn native_spawn(cmd: []u8, out_file: []u8) i64 {
+    let sh_c: *i8 = util_cpath("/bin/sh");
+    let dashc: *i8 = util_cpath("-c");
+    let cmd_c: *i8 = util_cpath(cmd);
+    let out_c: *i8 = util_cpath(out_file);
+    let devnull: *i8 = util_cpath("/dev/null");
+    let argv: *i64 = _zag_malloc(4 * 8) as *i64;
+    argv[0] = sh_c as i64;
+    argv[1] = dashc as i64;
+    argv[2] = cmd_c as i64;
+    argv[3] = 0;
+    let envp: *i64 = spawn_build_envp();
+
+    let pid: i64 = _zag_raw_syscall(57, 0, 0, 0, 0, 0, 0);   // fork
+    if (pid < 0) { return 0 - 1; }
+    if (pid == 0) {
+        _zag_raw_syscall(112, 0, 0, 0, 0, 0, 0);            // setsid — detach
+        let ofd: i64 = _zag_raw_syscall(2, out_c as i64, 577, 420, 0, 0, 0);  // open O_WRONLY|O_CREAT|O_TRUNC, 0644
+        _zag_raw_syscall(33, ofd, 1, 0, 0, 0, 0);           // dup2 -> stdout
+        _zag_raw_syscall(33, ofd, 2, 0, 0, 0, 0);           // dup2 -> stderr
+        let nfd: i64 = _zag_raw_syscall(2, devnull as i64, 0, 0, 0, 0, 0);   // open /dev/null O_RDONLY
+        _zag_raw_syscall(33, nfd, 0, 0, 0, 0, 0);           // dup2 -> stdin
+        _zag_raw_syscall(59, sh_c as i64, argv as i64, envp as i64, 0, 0, 0); // execve
+        _zag_raw_syscall(60, 127, 0, 0, 0, 0, 0);           // exit(127) if execve failed
+    }
+    return pid;
+}
+
+// Minimal f64 → string with 4 decimal places (for costs).
+fn util_f64_str(v: f64) []u8 {
+    let neg: bool = v < 0.0;
+    let a: f64 = v;
+    if (neg) { a = 0.0 - a; }
+    let scaled: i64 = ((a * 10000.0) + 0.5) as i64;
+    let whole: i64 = scaled / 10000;
+    let frac: i64 = scaled % 10000;
+    let sb: StrBuf = sb_make();
+    if (neg) { sb_ch(&sb, '-' as u8); }
+    sb_int(&sb, whole);
+    sb_ch(&sb, '.' as u8);
+    if (frac < 1000) { sb_ch(&sb, '0' as u8); }
+    if (frac < 100) { sb_ch(&sb, '0' as u8); }
+    if (frac < 10) { sb_ch(&sb, '0' as u8); }
+    sb_int(&sb, frac);
+    return sb_slice(&sb);
+}

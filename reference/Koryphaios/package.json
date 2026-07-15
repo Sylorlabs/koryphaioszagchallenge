@@ -1,0 +1,38 @@
+{
+  "name": "koryphaios",
+  "version": "1.0.22",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend",
+    "shared",
+    "desktop",
+    "mcp-server"
+  ],
+  "scripts": {
+    "dev": "bun run dev:desktop",
+    "dev:desktop": "bun run scripts/launch-desktop.ts",
+    "write-compat-hash": "bun run scripts/write-compat-hash.ts",
+    "build": "bun run write-compat-hash && bun run --filter '*' build",
+    "build:desktop": "bun run write-compat-hash && cd desktop && bun run build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "typecheck:ci": "bun run --filter backend typecheck && bun run --filter frontend check",
+    "test": "bun run --filter '*' test",
+    "test:backend:isolated": "bash scripts/test-backend-isolated.sh",
+    "test:core": "bun run test:backend:isolated && bun run --filter frontend test",
+    "test:e2e": "playwright test",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "format:changed": "bash scripts/check-changed-format.sh",
+    "build:ci": "bun run write-compat-hash && bun run --filter backend build && bun run --filter frontend build",
+    "dev:workspace": "bun run --filter \"*\" dev"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "playwright": "^1.59.1",
+    "playwright-core": "^1.59.1",
+    "prettier": "^3.1.1",
+    "prettier-plugin-svelte": "^3.1.2",
+    "prettier-plugin-tailwindcss": "^0.5.11"
+  }
+}

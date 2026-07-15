@@ -1,0 +1,5 @@
+@import("rev_a.zag")
+fn high_cb(x: i32) void {
+    _zag_println(_zag_i64_to_str((x * 3) as i64));
+}
+fn main() i32 { low_run(); return 0; }

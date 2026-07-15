@@ -1,0 +1,23 @@
+@import("../src/zrt/dns.zag")
+
+fn show(host: []u8) void {
+    let r: DnsResult = dns_resolve(host);
+    _zag_print(host);
+    _zag_print(" -> ");
+    if (r.ok) {
+        _zag_print(_zag_i64_to_str(r.ip0)); _zag_print(".");
+        _zag_print(_zag_i64_to_str(r.ip1)); _zag_print(".");
+        _zag_print(_zag_i64_to_str(r.ip2)); _zag_print(".");
+        _zag_println(_zag_i64_to_str(r.ip3));
+    } else {
+        _zag_println("FAILED");
+    }
+}
+
+fn main() i32 {
+    show("api.openai.com");
+    show("api.anthropic.com");
+    show("example.com");
+    show("127.0.0.1");
+    return 0;
+}

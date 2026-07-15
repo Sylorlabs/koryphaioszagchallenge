@@ -1,0 +1,300 @@
+// Agent-CLI auto-detection.
+//
+// Koryphaios scans the user's machine for installed + logged-in agent CLIs (Claude Code,
+// Codex, Antigravity CLI, Grok Build, Cursor) and surfaces them so their providers light up
+// with zero manual configuration. The registry uses the same signals (via auth-utils) to
+// auto-enable providers on boot; this module is the single, side-effect-free source of the
+// detection picture for the API/UI.
+//
+// "installed" = the CLI binary is on PATH. "loggedIn" = a credential/login signal exists.
+// "autoEnabled" = Koryphaios can drive a working provider from it right now (the rest are
+// detected + surfaced, but chatting through them needs an API key or a dedicated harness).
+
+import { existsSync } from 'node:fs';
+import { join, delimiter } from 'node:path';
+import type { ProviderName } from '@koryphaios/shared';
+import {
+  detectClaudeCodeLogin,
+  detectCodexAuthToken,
+  detectCodexCLILogin,
+  detectAntigravityApiKey,
+  detectAntigravityCLILogin,
+  createAntigravityCLIAuthMarker,
+  detectGrokCLILogin,
+  detectGrokXaiKey,
+  detectCursorCLILogin,
+  createClaudeCLIAuthMarker,
+  createCodexCLIAuthMarker,
+  createGrokCLIAuthMarker,
+  createCursorCLIAuthMarker,
+  detectDevinCLILogin,
+  createDevinCLIAuthMarker,
+  detectClineCLILogin,
+  createClineCLIAuthMarker,
+} from './auth-utils';
+
+export interface AgentCliStatus {
+  /** Stable id for the CLI. */
+  // NOTE: no 'gemini' here — the standalone Gemini CLI is unsupported and must
+  // never be re-added (Antigravity is its successor).
+  id: 'claude' | 'codex' | 'antigravity' | 'grok' | 'cursor' | 'devin' | 'cline';
+  displayName: string;
+  /** Candidate binary names looked up on PATH. */
+  binaries: string[];
+  /** The CLI binary was found on PATH. */
+  installed: boolean;
+  binaryPath: string | null;
+  /** A login/credential signal for the CLI was found. */
+  loggedIn: boolean;
+  /** Where the login signal came from (for display; never the secret itself). */
+  authSource: string | null;
+  /** Koryphaios provider this CLI maps to (null = no provider wired yet). */
+  provider: ProviderName | null;
+  /** Koryphaios can drive a working provider from this CLI right now. */
+  autoEnabled: boolean;
+  /** Human-readable status / next step. */
+  note: string;
+  docsUrl: string;
+}
+
+/** Locate an executable on PATH without spawning a process. */
+export function whichBinary(name: string): string | null {
+  const PATH = process.env.PATH ?? '';
+  const exts = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
+  for (const dir of PATH.split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const full = join(dir, name + ext);
+      if (existsSync(full)) return full;
+    }
+  }
+  return null;
+}
+
+function firstInstalled(binaries: string[]): string | null {
+  for (const b of binaries) {
+    const p = whichBinary(b);
+    if (p) return p;
+  }
+  return null;
+}
+
+/**
+ * The single gate for auto-enabling a CLI-backed provider: the CLI binary must be
+ * INSTALLED and a working credential present. A bare env var is intentionally NOT enough
+ * (matches the registry's "no auto-auth from environment without intent" rule); the CLI's
+ * presence on the machine is the intent signal. Honors KORY_DISABLE_CLI_AUTODETECT.
+ */
+export function canAutoEnable(provider: ProviderName): boolean {
+  if (process.env.KORY_DISABLE_CLI_AUTODETECT) return false;
+  switch (provider) {
+    case 'claude':
+      return !!whichBinary('claude') && detectClaudeCodeLogin();
+    case 'codex':
+      return !!whichBinary('codex') && !!detectCodexAuthToken();
+    case 'antigravity':
+      return !!whichBinary('agy') && detectAntigravityCLILogin();
+    case 'grok':
+      // Grok Build subscription CLI — installed + logged in (subscription or xAI key).
+      return !!whichBinary('grok') && detectGrokCLILogin();
+    case 'cursor':
+      return !!whichBinary('cursor-agent') && detectCursorCLILogin();
+    case 'devin':
+      return !!whichBinary('devin') && detectDevinCLILogin();
+    case 'cline':
+      return !!whichBinary('cline') && detectClineCLILogin();
+    default:
+      return false;
+  }
+}
+
+/**
+ * Credentials to inject when auto-enabling a CLI-backed provider, or null if it isn't
+ * auto-enableable. Used by the registry; shares {@link canAutoEnable}'s gate so the
+ * detection report and the actual provider state never disagree.
+ */
+export function cliAutoEnableCreds(
+  provider: ProviderName,
+): { apiKey?: string; authToken?: string } | null {
+  if (!canAutoEnable(provider)) return null;
+  switch (provider) {
+    case 'claude':
+      // The CLI owns the real token; the marker just signals "use the CLI harness".
+      return { authToken: createClaudeCLIAuthMarker() };
+    case 'codex':
+      return { authToken: createCodexCLIAuthMarker() };
+    case 'antigravity':
+      return { authToken: createAntigravityCLIAuthMarker() };
+    case 'grok':
+      // The CLI owns the real token; the marker just signals "use the CLI harness".
+      return { authToken: createGrokCLIAuthMarker() };
+    case 'cursor':
+      return { authToken: createCursorCLIAuthMarker() };
+    case 'devin':
+      return { authToken: createDevinCLIAuthMarker() };
+    case 'cline':
+      return { authToken: createClineCLIAuthMarker() };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Build the full detection picture. `autoDetectDisabled` mirrors the registry's
+ * KORY_DISABLE_CLI_AUTODETECT opt-out so the reported `autoEnabled` matches reality.
+ */
+export function detectAgentClis(): AgentCliStatus[] {
+  // ── Claude Code → `claude` provider (CLI harness, fully working) ──
+  const claudeLogin = detectClaudeCodeLogin();
+  const claude = mk('claude', 'Claude Code', ['claude'], 'claude', {
+    loggedIn: claudeLogin,
+    authSource: claudeLogin ? '~/.claude (subscription login)' : null,
+    autoEnabled: canAutoEnable('claude'),
+    workingNote: 'Chats through the Claude Code CLI harness.',
+    docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',
+  });
+
+  // ── Codex → `codex` provider. detectCodexAuthToken now reads ~/.codex too,
+  // so a machine-wide codex login IS a Koryphaios login — no second auth. ──
+  const koryCodexToken = !!detectCodexAuthToken();
+  const machineCodex = detectCodexCLILogin();
+  const codex = mk('codex', 'OpenAI Codex', ['codex'], 'codex', {
+    loggedIn: koryCodexToken || machineCodex,
+    authSource: koryCodexToken
+      ? 'Koryphaios codex-home'
+      : machineCodex
+        ? '~/.codex/auth.json'
+        : null,
+    autoEnabled: canAutoEnable('codex'),
+    workingNote: koryCodexToken
+      ? 'Signed in — your ChatGPT subscription is used automatically.'
+      : 'Not signed in — connect Codex from Providers (no CLI needed).',
+    docsUrl: 'https://developers.openai.com/codex/cli',
+  });
+
+  // ── Antigravity CLI (`agy`) → `google` provider. Google's Gemini CLI successor;
+  // auto-enables when ANTIGRAVITY_API_KEY is set. OAuth-only login is surfaced but
+  // needs an API key to drive the Google provider directly. ──
+  const antigravityKey = detectAntigravityApiKey();
+  const antigravityLogin = detectAntigravityCLILogin();
+  const antigravity = mk('antigravity', 'Antigravity CLI', ['agy'], 'antigravity', {
+    loggedIn: antigravityLogin,
+    authSource: antigravityKey
+      ? 'ANTIGRAVITY_API_KEY'
+      : antigravityLogin
+        ? '~/.gemini/antigravity-cli/'
+        : null,
+    autoEnabled: canAutoEnable('antigravity'),
+    // agy login alone is enough — Koryphaios drives the agy CLI harness
+    // directly. ANTIGRAVITY_API_KEY is an optional extra route, never a
+    // required step (the old note dead-ended users on an env var the GUI
+    // has no field for).
+    workingNote: antigravityLogin
+      ? 'Chats through the Antigravity CLI harness.'
+      : antigravityKey
+        ? 'Chats through the Google (Gemini) provider via ANTIGRAVITY_API_KEY.'
+        : 'Antigravity CLI is installed but not configured.',
+    loggedOutNote: 'Antigravity CLI is installed but not logged in — run "agy login".',
+    docsUrl: 'https://antigravity.google/docs/cli-getting-started',
+  });
+
+  // ── Gemini CLI: DO NOT ADD. The standalone `gemini` CLI is no longer
+  // supported by Koryphaios — Antigravity (`agy`, above) is Google's successor
+  // and the only Google CLI integration we detect. Do not re-add a `gemini`
+  // detection entry here. ──
+
+  // ── Grok Build → `grok` provider (its own CLI harness, like Claude Code / Codex). ──
+  const grokKey = detectGrokXaiKey();
+  const grokLogin = detectGrokCLILogin();
+  const grok = mk('grok', 'Grok Build', ['grok'], 'grok', {
+    loggedIn: grokLogin,
+    authSource: grokKey ? 'GROK_CODE_XAI_API_KEY' : grokLogin ? '~/.grok/auth.json' : null,
+    autoEnabled: canAutoEnable('grok'),
+    workingNote: 'Chats through the Grok Build CLI harness.',
+    docsUrl: 'https://docs.x.ai/build/cli/headless-scripting',
+  });
+
+  // ── Cursor (cursor-agent) → `cursor` provider (CLI harness, fully working). ──
+  const cursorLogin = detectCursorCLILogin();
+  const cursor = mk('cursor', 'Cursor CLI', ['cursor-agent'], 'cursor', {
+    loggedIn: cursorLogin,
+    authSource: cursorLogin
+      ? process.env.CURSOR_API_KEY
+        ? 'CURSOR_API_KEY'
+        : '~/.cursor/cli-config.json'
+      : null,
+    autoEnabled: canAutoEnable('cursor'),
+    workingNote:
+      'Cursor CLI detected and logged in — chat runs through the cursor-agent harness (no API key needed).',
+    loggedOutNote: 'Cursor CLI is installed but not logged in — run "cursor-agent login".',
+    docsUrl: 'https://cursor.com/docs/cli',
+  });
+
+  // ── Devin (devin) → `devin` provider (CLI harness, cloud-backed subscription). ──
+  const devinLogin = detectDevinCLILogin();
+  const devin = mk('devin', 'Devin CLI', ['devin'], 'devin', {
+    loggedIn: devinLogin,
+    authSource: devinLogin
+      ? process.env.COGNITION_API_KEY
+        ? 'COGNITION_API_KEY'
+        : '~/.local/share/devin/credentials.toml'
+      : null,
+    autoEnabled: canAutoEnable('devin'),
+    workingNote:
+      'Devin CLI detected and logged in — chat runs through the devin harness (no API key needed).',
+    loggedOutNote: 'Devin CLI is installed but not logged in — run "devin auth login".',
+    docsUrl: 'https://docs.devin.ai/',
+  });
+
+  const clineLogin = detectClineCLILogin();
+  const cline = mk('cline', 'Cline CLI', ['cline'], 'cline', {
+    loggedIn: clineLogin,
+    authSource: clineLogin ? '~/.cline/data/secrets.json' : null,
+    autoEnabled: canAutoEnable('cline'),
+    workingNote:
+      'Cline CLI detected and signed in — CLI-only, runs through the cline harness (Cline manages its own key).',
+    loggedOutNote:
+      'Cline CLI is installed but not signed in — run "cline auth --provider <p> --apikey <k>".',
+    docsUrl: 'https://docs.cline.bot/cli',
+  });
+
+  return [claude, codex, antigravity, grok, cursor, devin, cline];
+}
+
+function mk(
+  id: AgentCliStatus['id'],
+  displayName: string,
+  binaries: string[],
+  provider: ProviderName | null,
+  opts: {
+    loggedIn: boolean;
+    authSource: string | null;
+    autoEnabled: boolean;
+    workingNote: string;
+    /** Shown when installed but not logged in — the "run X login" hint. */
+    loggedOutNote?: string;
+    docsUrl: string;
+  },
+): AgentCliStatus {
+  const binaryPath = firstInstalled(binaries);
+  const installed = !!binaryPath;
+  const note = !installed
+    ? `${displayName} CLI not found on PATH.`
+    : !opts.loggedIn
+      ? (opts.loggedOutNote ?? `${displayName} CLI installed but not logged in.`)
+      : opts.workingNote;
+  return {
+    id,
+    displayName,
+    binaries,
+    installed,
+    binaryPath,
+    loggedIn: opts.loggedIn,
+    authSource: opts.authSource,
+    provider,
+    // Only claim auto-enabled when the CLI is actually present AND we can drive it.
+    autoEnabled: opts.autoEnabled && installed && opts.loggedIn,
+    note,
+    docsUrl: opts.docsUrl,
+  };
+}

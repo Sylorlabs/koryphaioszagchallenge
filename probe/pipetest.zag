@@ -1,0 +1,13 @@
+@import("../zagstd/rt.zag")
+fn cap(cmd: []u8) []u8 { return _zag_exec_capture(_zag_str_concat("( ", _zag_str_concat(cmd, " ) 2>&1"))); }
+fn main() i32 {
+    let a: []u8 = cap("seq 1 100000 | head -500 | grep 3");
+    _zag_print("head-then-grep len="); _zag_println(_zag_i64_to_str(a.len as i64));
+    let b: []u8 = cap("seq 1 100000 | grep 3 | head -500");
+    _zag_print("grep-then-head len="); _zag_println(_zag_i64_to_str(b.len as i64));
+    let c: []u8 = cap("find . -type f | head -50 | grep zag");
+    _zag_print("find-head-grep len="); _zag_println(_zag_i64_to_str(c.len as i64));
+    let d: []u8 = cap("seq 1 100000 | head -5");
+    _zag_print("simple-head len="); _zag_println(_zag_i64_to_str(d.len as i64));
+    return 0;
+}

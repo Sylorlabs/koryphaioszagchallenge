@@ -1,0 +1,41 @@
+@import("../src/zrt/ws.zag")
+
+// stub app layer
+fn app_handle(srv: *HttpServer, conn: *Conn, req: *Request) void {
+    if (str_eq(req.*.path, "/ws")) {
+        if (!ws_upgrade(srv, conn, req)) {
+            http_send_text(srv, conn, 400, "bad upgrade");
+        }
+        return;
+    }
+    if (str_eq(req.*.path, "/api/health")) {
+        http_send_json(srv, conn, 200, "{\"ok\":true}");
+        return;
+    }
+    if (str_eq(req.*.method, "POST") && str_eq(req.*.path, "/echo")) {
+        http_send_json(srv, conn, 200, req.*.body);
+        return;
+    }
+    http_send_text(srv, conn, 404, "nope");
+}
+
+fn app_ws_frame(srv: *HttpServer, conn: *Conn, opcode: i32, payload: []u8) void {
+    let reply: []u8 = _zag_str_concat("echo:", payload);
+    ws_send_text(srv, conn, reply);
+}
+
+fn app_conn_closed(srv: *HttpServer, conn: *Conn) void { let _u: i32 = 0; }
+fn app_client_readable(srv: *HttpServer, conn: *Conn) void { let _u: i32 = 0; }
+fn app_client_writable(srv: *HttpServer, conn: *Conn) void { let _u: i32 = 0; }
+fn app_tick(srv: *HttpServer, now_ms: i64) void { let _u: i32 = 0; }
+
+fn main() i32 {
+    let maybe: ?*HttpServer = http_server_make(18090);
+    if (maybe) |srv| {
+        _zag_println("listening on 18090");
+        http_run(srv);
+        return 0;
+    }
+    _zag_println("bind failed");
+    return 1;
+}

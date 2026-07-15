@@ -1,0 +1,15 @@
+@import("a.zag")
+@import("b.zag")
+
+struct Inner { count: i32 }
+struct Outer { inner: Inner, name: []u8 }
+
+fn main() i32 {
+    _zag_println(_zag_i64_to_str(from_a(5) as i64));
+    _zag_println(_zag_i64_to_str(from_b(5) as i64));
+    let o: *Outer = new(Outer{ .inner = Inner{ .count = 1 }, .name = "srv" });
+    o.*.inner.count = o.*.inner.count + 41;
+    _zag_println(_zag_i64_to_str(o.*.inner.count as i64));
+    _zag_println(o.*.name);
+    return 0;
+}

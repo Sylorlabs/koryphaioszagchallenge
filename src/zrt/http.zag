@@ -1,0 +1,521 @@
+// zrt/http.zag — HTTP/1.1 server engine on the epoll event loop.
+//
+// Replaces Bun.serve: nonblocking accept, incremental request parsing,
+// keep-alive, response building, static file serving with MIME detection.
+// The application layer provides (via top-level merge, resolved at link):
+//   fn app_handle(srv: *HttpServer, conn: *Conn, req: *Request) void
+//   fn app_ws_frame(srv: *HttpServer, conn: *Conn, opcode: i32, payload: []u8) void
+//   fn app_conn_closed(srv: *HttpServer, conn: *Conn) void
+//   fn app_client_readable(srv: *HttpServer, conn: *Conn) void   // kind==2 outbound
+//   fn app_tick(srv: *HttpServer, now_ms: i64) void
+//
+// Conn.kind: 0 = inbound HTTP, 1 = inbound WebSocket, 2 = outbound client.
+
+@import("net.zag")
+@import("str.zag")
+
+fn HTTP_MAXFD() i32 { return 8192; }
+
+struct Header {
+    name: []u8,     // lowercased
+    val: []u8,
+}
+
+struct Request {
+    method: []u8,
+    target: []u8,   // raw request target, e.g. /api/x?y=1
+    path: []u8,     // target before '?'
+    query: []u8,    // after '?', or ""
+    headers: ArrayList[Header],
+    body: []u8,
+}
+
+struct Conn {
+    fd: i64,
+    kind: i32,
+    inbuf: ArrayList[u8],
+    in_off: i32,             // consumed prefix of inbuf
+    outbuf: ArrayList[u8],
+    out_off: i32,
+    close_after: bool,
+    alive: bool,
+    // websocket state
+    ws_subs: ArrayList[[]u8], // subscribed session ids; app-managed
+    ws_frag: ArrayList[u8],  // fragmented-message accumulator
+    ws_frag_op: i32,         // opcode of the fragmented message (0 = none)
+    // outbound-client correlation handle for the app layer
+    tag: i64,
+    last_active_ms: i64,
+}
+
+struct HttpServer {
+    lfd: i64,
+    ep: Epoll,
+    conns: *i64,             // fd -> *Conn as i64 (0 = free)
+    running: bool,
+    port: i64,
+    started_ms: i64,
+    app_data: i64,           // opaque *AppState for the application layer
+}
+
+// ── connection registry ───────────────────────────────────────────────────────
+
+fn http_conn_new(fd: i64, kind: i32) *Conn {
+    return new(Conn{
+        .fd = fd,
+        .kind = kind,
+        .inbuf = make[u8](1024),
+        .in_off = 0,
+        .outbuf = make[u8](1024),
+        .out_off = 0,
+        .close_after = false,
+        .alive = true,
+        .ws_subs = make[[]u8](1),
+        .ws_frag = make[u8](1),
+        .ws_frag_op = 0,
+        .tag = 0,
+        .last_active_ms = 0,
+    });
+}
+
+fn http_conn_at(srv: *HttpServer, fd: i64) ?*Conn {
+    if (fd < 0 || fd >= (HTTP_MAXFD() as i64)) { return null; }
+    let raw: i64 = srv.*.conns[fd as i32];
+    if (raw == 0) { return null; }
+    return raw as *Conn;
+}
+
+fn http_conn_register(srv: *HttpServer, conn: *Conn) void {
+    srv.*.conns[conn.*.fd as i32] = conn as i64;
+}
+
+fn http_conn_close(srv: *HttpServer, conn: *Conn) void {
+    if (!conn.*.alive) { return; }
+    conn.*.alive = false;
+    ep_del(srv.*.ep, conn.*.fd);
+    net_close(conn.*.fd);
+    srv.*.conns[conn.*.fd as i32] = 0;
+    app_conn_closed(srv, conn);
+    free[u8](&conn.*.inbuf);
+    free[u8](&conn.*.outbuf);
+}
+
+// ── output path ───────────────────────────────────────────────────────────────
+
+fn http_out(conn: *Conn, data: []u8) void {
+    let i: i32 = 0;
+    while (i < data.len) {
+        push[u8](&conn.*.outbuf, data[i]);
+        i = i + 1;
+    }
+}
+
+// Try to flush outbuf; arms EPOLLOUT when the kernel buffer is full.
+fn http_flush(srv: *HttpServer, conn: *Conn) void {
+    if (!conn.*.alive) { return; }
+    let go: bool = true;
+    while (go && conn.*.out_off < conn.*.outbuf.len) {
+        let pending: []u8 = conn.*.outbuf.data[conn.*.out_off..conn.*.outbuf.len];
+        let n: i64 = net_write(conn.*.fd, pending);
+        if (n > 0) {
+            conn.*.out_off = conn.*.out_off + (n as i32);
+        } else if (n == (0 - EAGAIN())) {
+            ep_mod(srv.*.ep, conn.*.fd, EPOLLIN() | EPOLLOUT());
+            go = false;
+        } else {
+            http_conn_close(srv, conn);
+            return;
+        }
+    }
+    if (conn.*.out_off >= conn.*.outbuf.len) {
+        conn.*.outbuf.len = 0;
+        conn.*.out_off = 0;
+        ep_mod(srv.*.ep, conn.*.fd, EPOLLIN());
+        if (conn.*.close_after) {
+            http_conn_close(srv, conn);
+        }
+    }
+}
+
+// ── response building ─────────────────────────────────────────────────────────
+
+fn http_status_text(status: i32) []u8 {
+    if (status == 200) { return "OK"; }
+    if (status == 201) { return "Created"; }
+    if (status == 204) { return "No Content"; }
+    if (status == 301) { return "Moved Permanently"; }
+    if (status == 304) { return "Not Modified"; }
+    if (status == 400) { return "Bad Request"; }
+    if (status == 401) { return "Unauthorized"; }
+    if (status == 403) { return "Forbidden"; }
+    if (status == 404) { return "Not Found"; }
+    if (status == 409) { return "Conflict"; }
+    if (status == 429) { return "Too Many Requests"; }
+    if (status == 500) { return "Internal Server Error"; }
+    if (status == 101) { return "Switching Protocols"; }
+    return "OK";
+}
+
+// Send a full response with body. extra_headers: raw pre-formatted header
+// lines each ending in \r\n (or "" for none).
+fn http_respond_full(srv: *HttpServer, conn: *Conn, status: i32, content_type: []u8, extra_headers: []u8, body: []u8) void {
+    let sb: StrBuf = sb_make();
+    let hb: *StrBuf = &sb;
+    sb_app(hb, "HTTP/1.1 ");
+    sb_int(hb, status as i64);
+    sb_ch(hb, ' ');
+    sb_app(hb, http_status_text(status));
+    sb_app(hb, "\r\n");
+    if (content_type.len > 0) {
+        sb_app(hb, "Content-Type: ");
+        sb_app(hb, content_type);
+        sb_app(hb, "\r\n");
+    }
+    sb_app(hb, "Content-Length: ");
+    sb_int(hb, body.len as i64);
+    sb_app(hb, "\r\n");
+    sb_app(hb, extra_headers);
+    if (conn.*.close_after) {
+        sb_app(hb, "Connection: close\r\n");
+    } else {
+        sb_app(hb, "Connection: keep-alive\r\n");
+    }
+    sb_app(hb, "\r\n");
+    http_out(conn, sb_slice(hb));
+    http_out(conn, body);
+    http_flush(srv, conn);
+}
+
+fn http_send_json(srv: *HttpServer, conn: *Conn, status: i32, json_body: []u8) void {
+    http_respond_full(srv, conn, status, "application/json", http_cors_headers(), json_body);
+}
+
+fn http_send_text(srv: *HttpServer, conn: *Conn, status: i32, body: []u8) void {
+    http_respond_full(srv, conn, status, "text/plain; charset=utf-8", "", body);
+}
+
+fn http_cors_headers() []u8 {
+    return "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Koryphaios-Project\r\n";
+}
+
+// ── MIME types ────────────────────────────────────────────────────────────────
+
+fn http_mime_for(path: []u8) []u8 {
+    if (str_ends_with(path, ".html")) { return "text/html; charset=utf-8"; }
+    if (str_ends_with(path, ".css")) { return "text/css; charset=utf-8"; }
+    if (str_ends_with(path, ".js")) { return "application/javascript; charset=utf-8"; }
+    if (str_ends_with(path, ".mjs")) { return "application/javascript; charset=utf-8"; }
+    if (str_ends_with(path, ".json")) { return "application/json"; }
+    if (str_ends_with(path, ".png")) { return "image/png"; }
+    if (str_ends_with(path, ".jpg") || str_ends_with(path, ".jpeg")) { return "image/jpeg"; }
+    if (str_ends_with(path, ".gif")) { return "image/gif"; }
+    if (str_ends_with(path, ".svg")) { return "image/svg+xml"; }
+    if (str_ends_with(path, ".ico")) { return "image/x-icon"; }
+    if (str_ends_with(path, ".woff2")) { return "font/woff2"; }
+    if (str_ends_with(path, ".woff")) { return "font/woff"; }
+    if (str_ends_with(path, ".ttf")) { return "font/ttf"; }
+    if (str_ends_with(path, ".txt")) { return "text/plain; charset=utf-8"; }
+    if (str_ends_with(path, ".webp")) { return "image/webp"; }
+    if (str_ends_with(path, ".map")) { return "application/json"; }
+    return "application/octet-stream";
+}
+
+// Serve a file from disk; returns false if it does not exist / unreadable.
+fn http_send_file(srv: *HttpServer, conn: *Conn, fs_path: []u8) bool {
+    if (_zag_file_exists(fs_path) == 0) { return false; }
+    let content: []u8 = _zag_read_file(fs_path);
+    if (content.len < 0) { return false; }
+    http_respond_full(srv, conn, 200, http_mime_for(fs_path), "Cache-Control: no-cache\r\n", content);
+    return true;
+}
+
+// ── request parsing ───────────────────────────────────────────────────────────
+
+fn http_header_get(req: *Request, name_lower: []u8) []u8 {
+    let i: i32 = 0;
+    while (i < req.*.headers.len) {
+        let h: Header = get[Header](req.*.headers, i);
+        if (str_eq(h.name, name_lower)) { return h.val; }
+        i = i + 1;
+    }
+    return "";
+}
+
+fn http_header_has(req: *Request, name_lower: []u8) bool {
+    let i: i32 = 0;
+    while (i < req.*.headers.len) {
+        let h: Header = get[Header](req.*.headers, i);
+        if (str_eq(h.name, name_lower)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Parse one complete request out of conn.inbuf[in_off..]. Returns null when
+// more bytes are needed. On success the consumed bytes are accounted via
+// in_off and a heap Request is returned (slices point into a private copy).
+fn http_try_parse(conn: *Conn) ?*Request {
+    let avail: []u8 = conn.*.inbuf.data[conn.*.in_off..conn.*.inbuf.len];
+    let hdr_end: i32 = str_index_of(avail, "\r\n\r\n");
+    if (hdr_end < 0) { return null; }
+    let head: []u8 = avail[0..hdr_end];
+
+    // request line
+    let line_end: i32 = str_index_of(head, "\r\n");
+    let req_line: []u8 = head;
+    if (line_end >= 0) { req_line = head[0..line_end]; }
+    let sp1: SplitResult = str_split_first(req_line, ' ');
+    if (!sp1.found) { return null; }
+    let method: []u8 = sp1.head;
+    let sp2: SplitResult = str_split_first(sp1.tail, ' ');
+    let target: []u8 = sp2.head;
+
+    // headers
+    let headers: ArrayList[Header] = make[Header](8);
+    let cursor: i32 = line_end + 2;
+    let go: bool = line_end >= 0;
+    while (go) {
+        let next: i32 = str_index_of_from(head, "\r\n", cursor);
+        let line: []u8 = "";
+        if (next < 0) {
+            line = head[cursor..head.len];
+            go = false;
+        } else {
+            line = head[cursor..next];
+            cursor = next + 2;
+        }
+        if (line.len > 0) {
+            let cp: SplitResult = str_split_first(line, ':');
+            if (cp.found) {
+                push[Header](&headers, Header{
+                    .name = str_to_lower(str_trim(cp.head)),
+                    .val = str_trim(cp.tail),
+                });
+            }
+        }
+    }
+
+    // content-length body
+    let total_head: i32 = hdr_end + 4;
+    let clen: i64 = 0;
+    let i: i32 = 0;
+    while (i < headers.len) {
+        let h: Header = get[Header](headers, i);
+        if (str_eq(h.name, "content-length")) { clen = str_to_i64(h.val); }
+        i = i + 1;
+    }
+    if ((avail.len - total_head) < (clen as i32)) { return null; }  // need more bytes
+    let body: []u8 = avail[total_head..total_head + (clen as i32)];
+
+    // copy request bytes so inbuf can be compacted safely
+    let consumed: i32 = total_head + (clen as i32);
+    let raw: *i8 = _zag_malloc(consumed);
+    _zag_memcpy(raw, _zag_slice_ptr(avail[0..consumed]), consumed);
+    let copy: []u8 = raw[0..consumed];
+
+    // rebuild slices over the copy
+    let c_target: []u8 = copy[(_zag_slice_off(avail, method) + method.len + 1)..(_zag_slice_off(avail, method) + method.len + 1 + target.len)];
+    let qsplit: SplitResult = str_split_first(c_target, '?');
+
+    // re-parse headers over the copy (cheap; head is small)
+    let c_head: []u8 = copy[0..hdr_end];
+    let c_headers: ArrayList[Header] = make[Header](headers.len + 1);
+    let c_line_end: i32 = str_index_of(c_head, "\r\n");
+    let c_cursor: i32 = c_line_end + 2;
+    let go2: bool = c_line_end >= 0;
+    while (go2) {
+        let next2: i32 = str_index_of_from(c_head, "\r\n", c_cursor);
+        let line2: []u8 = "";
+        if (next2 < 0) {
+            line2 = c_head[c_cursor..c_head.len];
+            go2 = false;
+        } else {
+            line2 = c_head[c_cursor..next2];
+            c_cursor = next2 + 2;
+        }
+        if (line2.len > 0) {
+            let cp2: SplitResult = str_split_first(line2, ':');
+            if (cp2.found) {
+                push[Header](&c_headers, Header{
+                    .name = str_to_lower(str_trim(cp2.head)),
+                    .val = str_trim(cp2.tail),
+                });
+            }
+        }
+    }
+
+    conn.*.in_off = conn.*.in_off + consumed;
+
+    let req: *Request = new(Request{
+        .method = copy[0..method.len],
+        .target = c_target,
+        .path = qsplit.head,
+        .query = qsplit.tail,
+        .headers = c_headers,
+        .body = copy[total_head..consumed],
+    });
+    return req;
+}
+
+// Byte offset of subslice `sub` within `base` (both must share the backing store).
+fn _zag_slice_off(base: []u8, sub: []u8) i32 {
+    // pointer distance via i64 casts of the data pointers
+    let bp: i64 = _zag_slice_ptr(base) as i64;
+    let sp: i64 = _zag_slice_ptr(sub) as i64;
+    return (sp - bp) as i32;
+}
+
+// Compact consumed bytes out of inbuf.
+fn http_compact(conn: *Conn) void {
+    if (conn.*.in_off == 0) { return; }
+    let remain: i32 = conn.*.inbuf.len - conn.*.in_off;
+    if (remain > 0) {
+        let src: []u8 = conn.*.inbuf.data[conn.*.in_off..conn.*.inbuf.len];
+        _zag_memcpy(conn.*.inbuf.data as *i8, _zag_slice_ptr(src), remain);
+    }
+    conn.*.inbuf.len = remain;
+    conn.*.in_off = 0;
+}
+
+// ── event loop ────────────────────────────────────────────────────────────────
+
+fn http_server_make(port: i64) ?*HttpServer {
+    let lfd: i64 = net_listen(port, 128);
+    if (lfd < 0) { return null; }
+    let ep: Epoll = ep_create(256);
+    let raw: *i8 = _zag_malloc(HTTP_MAXFD() * 8);
+    let conns: *i64 = raw as *i64;
+    let i: i32 = 0;
+    while (i < HTTP_MAXFD()) { conns[i] = 0; i = i + 1; }
+    let srv: *HttpServer = new(HttpServer{
+        .lfd = lfd,
+        .ep = ep,
+        .conns = conns,
+        .running = true,
+        .port = port,
+        .started_ms = _zag_clock_monotonic_ms(),
+        .app_data = 0,
+    });
+    ep_add(srv.*.ep, lfd, EPOLLIN());
+    return srv;
+}
+
+// Register an outbound (kind==2) fd owned by the app layer.
+fn http_adopt_client(srv: *HttpServer, fd: i64, tag: i64) ?*Conn {
+    if (fd < 0 || fd >= (HTTP_MAXFD() as i64)) { return null; }
+    net_set_nonblocking(fd);
+    let conn: *Conn = http_conn_new(fd, 2);
+    conn.*.tag = tag;
+    http_conn_register(srv, conn);
+    ep_add(srv.*.ep, fd, EPOLLIN() | EPOLLOUT());
+    return conn;
+}
+
+fn http_handle_readable(srv: *HttpServer, conn: *Conn, buf: *i8) void {
+    let go: bool = true;
+    let saw_eof: bool = false;
+    while (go) {
+        let n: i64 = net_read(conn.*.fd, buf, 65536);
+        if (n > 0) {
+            let chunk: []u8 = buf[0..(n as i32)];
+            let i: i32 = 0;
+            while (i < chunk.len) {
+                push[u8](&conn.*.inbuf, chunk[i]);
+                i = i + 1;
+            }
+        } else if (n == 0) {
+            saw_eof = true;
+            go = false;
+        } else if (n == (0 - EAGAIN()) || n == (0 - EINTR())) {
+            go = false;
+        } else {
+            saw_eof = true;
+            go = false;
+        }
+    }
+
+    conn.*.last_active_ms = _zag_clock_monotonic_ms();
+
+    if (conn.*.kind == 0) {
+        // parse as many pipelined requests as are complete
+        let parsing: bool = true;
+        while (parsing && conn.*.alive) {
+            let maybe: ?*Request = http_try_parse(conn);
+            if (maybe) |req| {
+                app_handle(srv, conn, req);
+            } else {
+                parsing = false;
+            }
+        }
+        if (conn.*.alive) { http_compact(conn); }
+    } else if (conn.*.kind == 1) {
+        ws_drain_frames(srv, conn);
+    } else {
+        app_client_readable(srv, conn);
+    }
+
+    if (saw_eof && conn.*.alive) {
+        if (conn.*.kind == 2) {
+            app_client_readable(srv, conn);   // final drain notification
+        }
+        http_conn_close(srv, conn);
+    }
+}
+
+// One iteration of the event loop with a poll timeout.
+fn http_poll(srv: *HttpServer, timeout_ms: i64, buf: *i8) void {
+    let n: i64 = ep_wait(srv.*.ep, timeout_ms);
+    let i: i32 = 0;
+    while (i < (n as i32)) {
+        let fd: i64 = ep_event_fd(srv.*.ep, i);
+        let flags: i64 = ep_event_flags(srv.*.ep, i);
+        if (fd == srv.*.lfd) {
+            let accepting: bool = true;
+            while (accepting) {
+                let cfd: i64 = net_accept(srv.*.lfd);
+                if (cfd < 0) {
+                    accepting = false;
+                } else if (cfd >= (HTTP_MAXFD() as i64)) {
+                    net_close(cfd);
+                } else {
+                    let conn: *Conn = http_conn_new(cfd, 0);
+                    conn.*.last_active_ms = _zag_clock_monotonic_ms();
+                    http_conn_register(srv, conn);
+                    ep_add(srv.*.ep, cfd, EPOLLIN());
+                }
+            }
+        } else {
+            let maybe: ?*Conn = http_conn_at(srv, fd);
+            if (maybe) |conn| {
+                if ((flags & (EPOLLERR() | EPOLLHUP())) != 0 && conn.*.kind != 2) {
+                    http_conn_close(srv, conn);
+                } else {
+                    if ((flags & EPOLLOUT()) != 0 && conn.*.alive) {
+                        if (conn.*.kind == 2 && conn.*.tag != 0) {
+                            // connection established / writable — app may want to send
+                            app_client_writable(srv, conn);
+                        }
+                        http_flush(srv, conn);
+                    }
+                    if ((flags & EPOLLIN()) != 0 && conn.*.alive) {
+                        http_handle_readable(srv, conn, buf);
+                    }
+                    if ((flags & (EPOLLERR() | EPOLLHUP())) != 0) {
+                        let still: ?*Conn = http_conn_at(srv, fd);
+                        if (still) |c2| { http_conn_close(srv, c2); }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// Main loop: poll + app tick, forever.
+fn http_run(srv: *HttpServer) void {
+    let buf: *i8 = _zag_malloc(65536);
+    while (srv.*.running) {
+        http_poll(srv, 50, buf);
+        app_tick(srv, _zag_clock_monotonic_ms());
+    }
+}

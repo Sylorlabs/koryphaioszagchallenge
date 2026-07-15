@@ -1,0 +1,4 @@
+@import("../zagstd/rt.zag")
+fn low_run() void {
+    high_cb(5);
+}

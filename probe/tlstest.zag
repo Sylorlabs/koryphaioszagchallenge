@@ -1,0 +1,40 @@
+@import("../src/zrt/tls.zag")
+
+fn main() i32 {
+    let host: []u8 = "api.openai.com";
+    _zag_println("connecting (TLS 1.3 handshake)...");
+    let maybe: ?*TlsConn = tls_connect(host, 443);
+    if (maybe) |conn| {
+        _zag_println("HANDSHAKE OK — application keys installed");
+        // send a simple GET (bad/no key → expect 401 JSON, proves round-trip)
+        let req: []u8 = "GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\nAuthorization: Bearer sk-invalid-test\r\nAccept: application/json\r\nConnection: close\r\n\r\n";
+        if (!tls_send_app(conn, req)) { _zag_println("send failed"); return 1; }
+        _zag_println("request sent, reading response...");
+        let buf: *i8 = _zag_malloc(16384);
+        let go: bool = true;
+        let total: i32 = 0;
+        while (go) {
+            let n: i64 = net_read_blocking(conn.*.fd, buf, 16384);
+            if (n > 0) {
+                let cap: i32 = n as i32; if (cap > 6) { cap = 6; }
+                _zag_eprintln(_zag_str_concat("raw resp bytes=", _zag_str_concat(_zag_i64_to_str(n), _zag_str_concat(" first=", str_to_hex(buf[0..cap])))));
+                tls_feed(conn, buf[0..(n as i32)]);
+                total = total + (n as i32);
+            } else {
+                go = false;
+            }
+        }
+        _zag_eprintln(_zag_str_concat("conn.ok after read=", _zag_i64_to_str(conn.*.ok as i64)));
+        _zag_eprintln(_zag_str_concat("total raw read=", _zag_i64_to_str(total as i64)));
+        let resp: []u8 = conn.*.plain.data[0..conn.*.plain.len];
+        _zag_print("decrypted HTTP response bytes: ");
+        _zag_println(_zag_i64_to_str(resp.len as i64));
+        // print the status line + a bit
+        let cap: i32 = resp.len;
+        if (cap > 400) { cap = 400; }
+        _zag_println(resp[0..cap]);
+        return 0;
+    }
+    _zag_println("HANDSHAKE FAILED");
+    return 1;
+}

@@ -1,0 +1,167 @@
+// backend/routes_proc.zag — process supervisor: background shell processes.
+//
+// POST /api/processes spawns a detached `setsid sh -c` whose combined output is
+// redirected to a per-process file; the pid is tracked and reaped
+// non-blockingly in the event-loop tick, emitting process.started/exited.
+
+@import("archive.zag")
+
+fn proc_find(app: *AppState, id: []u8) ?*Proc {
+    let i: i32 = 0;
+    while (i < app.*.procs.len) {
+        let p: *Proc = get[*Proc](app.*.procs, i);
+        if (str_eq(p.*.id, id)) { return p; }
+        i = i + 1;
+    }
+    return null;
+}
+
+// Launch a detached background process natively (fork/setsid/execve in Zag —
+// see util.native_spawn). Returns the child pid, or -1 on failure.
+fn proc_spawn(app: *AppState, cmd: []u8, out_file: []u8) i64 {
+    let _a: i64 = app.*.started_ms;
+    return native_spawn(cmd, out_file);
+}
+
+fn proc_kill(pid: i64) void {
+    if (pid > 0) { _zag_raw_syscall(62, pid, 15, 0, 0, 0, 0); }  // SIGTERM
+}
+
+fn proc_json(p: *Proc, sb: *StrBuf) void {
+    sb_app(sb, "{\"id\":\"");
+    sb_app(sb, p.*.id);
+    sb_app(sb, "\",\"pid\":");
+    sb_int(sb, p.*.pid);
+    sb_app(sb, ",\"command\":\"");
+    sb_app(sb, str_escape_json(p.*.command));
+    sb_app(sb, "\",\"status\":\"");
+    sb_app(sb, p.*.status);
+    sb_app(sb, "\",\"exitCode\":");
+    sb_int(sb, p.*.exit_code);
+    sb_app(sb, ",\"createdAt\":");
+    sb_int(sb, p.*.started_ms);
+    sb_ch(sb, '}' as u8);
+}
+
+fn procs_json(app: *AppState) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '[' as u8);
+    let i: i32 = 0;
+    while (i < app.*.procs.len) {
+        if (i > 0) { sb_ch(&sb, ',' as u8); }
+        proc_json(get[*Proc](app.*.procs, i), &sb);
+        i = i + 1;
+    }
+    sb_ch(&sb, ']' as u8);
+    return sb_slice(&sb);
+}
+
+// Reap exited children with wait4(WNOHANG) and emit process.exited. Called each
+// tick. Since native_spawn's children are our direct children, they linger as
+// zombies until reaped here — wait4 both detects exit and clears the zombie.
+fn proc_reap(srv: *HttpServer, app: *AppState) void {
+    let i: i32 = 0;
+    while (i < app.*.procs.len) {
+        let p: *Proc = get[*Proc](app.*.procs, i);
+        if (str_eq(p.*.status, "running") && p.*.pid > 0) {
+            let stbuf: *i8 = _zag_malloc(8);
+            wr_u64le(stbuf, 0, 0);
+            let rc: i64 = _zag_raw_syscall(61, p.*.pid, stbuf as i64, 1, 0, 0, 0);  // wait4(pid,&st,WNOHANG,0)
+            if (rc == p.*.pid || rc < 0) {
+                // exited (rc==pid) or no such child / already gone (rc<0)
+                let raw_st: i64 = rd_u32le(stbuf, 0);
+                p.*.exit_code = (raw_st >> 8) & 255;   // WEXITSTATUS
+                p.*.status = "exited";
+                let sb: StrBuf = sb_make();
+                sb_app(&sb, "{\"id\":\"");
+                sb_app(&sb, p.*.id);
+                sb_app(&sb, "\",\"pid\":");
+                sb_int(&sb, p.*.pid);
+                sb_app(&sb, ",\"status\":\"exited\",\"exitCode\":");
+                sb_int(&sb, p.*.exit_code);
+                sb_app(&sb, "}");
+                ws_emit(srv, "process.exited", sb_slice(&sb), p.*.session_id, "");
+            }
+            _zag_free(stbuf);
+        }
+        i = i + 1;
+    }
+}
+
+fn routes_proc(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) bool {
+    let path: []u8 = req.*.path;
+    let method: []u8 = req.*.method;
+    if (!str_starts_with(path, "/api/processes")) { return false; }
+
+    if (str_eq(path, "/api/processes") && str_eq(method, "GET")) {
+        http_send_json(srv, conn, 200, _zag_str_concat(_zag_str_concat("{\"ok\":true,\"processes\":", procs_json(app)), "}"));
+        return true;
+    }
+    if (str_eq(path, "/api/processes") && str_eq(method, "POST")) {
+        let body: ?*JNode = json_parse(req.*.body);
+        let cmd: []u8 = json_str(json_get(body, "command"));
+        if (cmd.len == 0) { cmd = json_str(json_get(body, "cmd")); }
+        let sid: []u8 = json_str(json_get(body, "sessionId"));
+        if (cmd.len == 0) {
+            http_send_json(srv, conn, 200, "{\"ok\":false,\"error\":\"missing command\"}");
+            return true;
+        }
+        let id: []u8 = util_nanoid(10);
+        let out_file: []u8 = _zag_str_concat(app.*.data_dir, _zag_str_concat("/proc-", _zag_str_concat(id, ".out")));
+        let pid: i64 = proc_spawn(app, cmd, out_file);
+        let p: *Proc = new(Proc{
+            .id = id,
+            .pid = pid,
+            .command = _zag_strdup(cmd),
+            .status = "running",
+            .exit_code = 0,
+            .out_file = out_file,
+            .session_id = _zag_strdup(sid),
+            .started_ms = util_now_ms(),
+        });
+        push[*Proc](&app.*.procs, p);
+        let sb: StrBuf = sb_make();
+        proc_json(p, &sb);
+        let pjson: []u8 = sb_slice(&sb);
+        ws_emit(srv, "process.started", pjson, sid, "");
+        http_send_json(srv, conn, 200, _zag_str_concat(_zag_str_concat("{\"ok\":true,\"data\":", pjson), "}"));
+        return true;
+    }
+    if (str_starts_with(path, "/api/processes/")) {
+        let id: []u8 = path_param(path, "/api/processes/");
+        let action: []u8 = path_action(path, "/api/processes/");
+        let maybe: ?*Proc = proc_find(app, id);
+        if (maybe) |p| {
+            if (str_eq(action, "output") && str_eq(method, "GET")) {
+                let out: []u8 = util_read_or_empty(p.*.out_file);
+                let osb: StrBuf = sb_make();
+                sb_app(&osb, "{\"output\":\"");
+                sb_app(&osb, str_escape_json(out));
+                sb_app(&osb, "\"}");
+                http_send_json(srv, conn, 200, _zag_str_concat(_zag_str_concat("{\"ok\":true,\"data\":", sb_slice(&osb)), "}"));
+                return true;
+            }
+            if ((str_eq(action, "kill") || str_eq(action, "stop")) && str_eq(method, "POST")) {
+                proc_kill(p.*.pid);
+                p.*.status = "exited";
+                http_send_json(srv, conn, 200, "{\"ok\":true}");
+                return true;
+            }
+            if (action.len == 0 && str_eq(method, "GET")) {
+                let sb: StrBuf = sb_make();
+                proc_json(p, &sb);
+                http_send_json(srv, conn, 200, _zag_str_concat(_zag_str_concat("{\"ok\":true,\"data\":", sb_slice(&sb)), "}"));
+                return true;
+            }
+            if (action.len == 0 && str_eq(method, "DELETE")) {
+                proc_kill(p.*.pid);
+                p.*.status = "exited";
+                http_send_json(srv, conn, 200, "{\"ok\":true}");
+                return true;
+            }
+        }
+        http_send_json(srv, conn, 404, "{\"ok\":false,\"error\":\"process not found\"}");
+        return true;
+    }
+    return false;
+}

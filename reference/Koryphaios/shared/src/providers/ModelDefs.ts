@@ -1,0 +1,79 @@
+// Model Definitions
+// Domain: LLM model specifications and capabilities
+
+import type { ProviderName } from './ProviderNames';
+
+// Re-export for convenience
+export type { ProviderName } from './ProviderNames';
+
+export type ModelTier = 'flagship' | 'fast' | 'cheap' | 'reasoning';
+
+export interface ModelDef {
+  id: string;
+  name: string;
+  provider: ProviderName;
+  /** Model ID sent to the API. Defaults to `id` if omitted. Used when API expects a different name (e.g., OpenRouter "openai/gpt-4.1"). */
+  apiModelId?: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  costPerMInputTokens?: number;
+  costPerMOutputTokens?: number;
+  costPerMInputCached?: number;
+  costPerMOutputCached?: number;
+  canReason?: boolean;
+  /** Real effort levels this model supports (e.g. ['low','medium','high','xhigh']), when the
+   *  provider reports them live. Falls back to static ReasoningConfig tables when absent. */
+  reasoningLevels?: string[];
+  supportsAttachments?: boolean;
+  supportsStreaming?: boolean;
+  tier?: ModelTier;
+  isGeneric?: boolean;
+  reasoningBudget?: number;
+  // Additional metadata
+  deprecated?: boolean;
+  beta?: boolean;
+  vision?: boolean;
+  functionCall?: boolean;
+  /** For alias-based CLI models: the real resolved model ID (e.g. 'claude-opus-4-8' for alias 'opus') */
+  realModelId?: string;
+  /** True when contextWindow came from (or was confirmed against) a live provider/CLI
+   *  response rather than a hand-maintained catalog entry. Trusted for UI telemetry. */
+  contextVerified?: boolean;
+}
+
+export interface ProviderConfig {
+  name: ProviderName;
+  apiKey?: string;
+  authToken?: string;
+  baseUrl?: string;
+  disabled: boolean;
+  /** List of model IDs enabled by the user. If empty or undefined, all are enabled. */
+  selectedModels?: string[];
+  /** Whether to skip the model selection dialog in the future. */
+  hideModelSelector?: boolean;
+  /** Ordered list of saved account IDs for automatic fallback on failure. */
+  fallbackOrder?: string[];
+  headers?: Record<string, string>;
+
+  // ─── Custom (user-defined / bring-your-own) provider fields ───────────────
+  /** True when this is a user-defined custom provider (not a built-in). */
+  custom?: boolean;
+  /** API wire format for a custom provider. Defaults to 'openai' (OpenAI-compatible). */
+  kind?: 'openai' | 'anthropic' | 'gemini';
+  /** Human-friendly display name for a custom provider. */
+  label?: string;
+  /** Explicitly declared model IDs for a custom provider (used when the endpoint has
+   *  no /models discovery, or to seed the catalog before the live fetch completes). */
+  models?: string[];
+}
+
+export interface ProviderStatus {
+  name: ProviderName;
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  availableModels: number;
+  circuitOpen?: boolean;
+  lastError?: string;
+  responseTimeMs?: number;
+}

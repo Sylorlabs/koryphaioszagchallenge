@@ -1,0 +1,311 @@
+// src/zrt/tls_x25519.zag — X25519 (Curve25519 Diffie-Hellman, RFC 7748).
+//
+// Ported directly from TweetNaCl's crypto_scalarmult (public domain;
+// D. J. Bernstein, Tanja Lange, Peter Schwabe, Bo-Yin Yang). TweetNaCl
+// represents a field element (gf) of GF(2^255-19) as 16 limbs of radix
+// 2^16 stored in 64-bit words — generous headroom (schoolbook products
+// a[i]*b[j] are < 2^34, the 16-term row sums < 2^39, all comfortably
+// inside signed i64/63-bit range) at the cost of being a little slower
+// than the tighter 26/25-bit ref10 layout. Zag has no fixed-size arrays,
+// so a gf is a malloc'd `*i64` pointing at 16 slots, threaded around by
+// pointer the way TweetNaCl threads `gf` (== `long[16]`) by array decay.
+//
+// All helpers are prefixed `x25_` to stay collision-free in the flat
+// whole-program namespace shared by every file that (transitively)
+// imports this one.
+//
+// Public API:
+//   x25519(scalar, u)   -> 32-byte Montgomery-ladder shared secret
+//   x25519_base(scalar) -> 32-byte public key (ladder against u = 9)
+
+@import("str.zag")
+
+// ── gf: 16-limb radix-2^16 field element, malloc'd *i64[16] ─────────────────
+
+fn x25_gf_new() *i64 {
+    let raw: *i8 = _zag_malloc(16 * 8);
+    let g: *i64 = raw as *i64;
+    let i: i32 = 0;
+    while (i < 16) {
+        g[i] = 0;
+        i = i + 1;
+    }
+    return g;
+}
+
+fn x25_gf_copy(o: *i64, a: *i64) void {
+    let i: i32 = 0;
+    while (i < 16) {
+        o[i] = a[i];
+        i = i + 1;
+    }
+}
+
+// Carry-propagate o's 16 limbs: each limb is folded back to [0, 2^16) range
+// and the surplus pushed into the next limb, except the top limb (i==15)
+// whose surplus wraps around into limb 0 multiplied by 38 — the reduction
+// mod 2^255-19 (2^256 = 2 * 2^255 = 2*(19 - 2^255 + 2^255).. concretely:
+// limb 16 (== 2^256) reduces to 2*19 = 38 in limb 0, since 2^255 = 19 mod p
+// and this is limb 16 of a radix-2^16 layout, i.e. 2^(16*16) = 2^256).
+// Exactly TweetNaCl's car25519 — the classic bug spot, ported verbatim.
+fn x25_car25519(o: *i64) void {
+    let i: i32 = 0;
+    while (i < 16) {
+        o[i] = o[i] + 65536;
+        let c: i64 = o[i] >> 16;
+        if (i < 15) {
+            o[i + 1] = o[i + 1] + (c - 1);
+        } else {
+            o[0] = o[0] + 38 * (c - 1);
+        }
+        o[i] = o[i] - (c << 16);
+        i = i + 1;
+    }
+}
+
+// Constant-time-shaped conditional swap: if b == 1, swap p and q limb-wise;
+// if b == 0, leave both unchanged. Relies on (0 - b) being all-zero-bits
+// when b==0 and all-one-bits when b==1 (two's complement of 0/1), which is
+// exactly TweetNaCl's `~(b-1)` (verified equal: ~(b-1) == -b for b in {0,1}).
+fn x25_sel25519(p: *i64, q: *i64, b: i64) void {
+    let c: i64 = 0 - b;
+    let i: i32 = 0;
+    while (i < 16) {
+        let t: i64 = c & (p[i] ^ q[i]);
+        p[i] = p[i] ^ t;
+        q[i] = q[i] ^ t;
+        i = i + 1;
+    }
+}
+
+fn x25_A(o: *i64, a: *i64, b: *i64) void {
+    let i: i32 = 0;
+    while (i < 16) {
+        o[i] = a[i] + b[i];
+        i = i + 1;
+    }
+}
+
+fn x25_Z(o: *i64, a: *i64, b: *i64) void {
+    let i: i32 = 0;
+    while (i < 16) {
+        o[i] = a[i] - b[i];
+        i = i + 1;
+    }
+}
+
+// Field multiply: o = a*b mod (2^255-19). Schoolbook 16x16 convolution into
+// a 31-limb scratch buffer, fold the top 15 limbs (weight >= 2^256) back in
+// multiplied by 38 (== 2 * 19, since 2^256 = 2 * 2^255 = 2*19 mod p), then
+// two carry passes to renormalize. `o` may alias `a` and/or `b` safely: all
+// reads of a[]/b[] happen before anything is written through `o`.
+fn x25_M(o: *i64, a: *i64, b: *i64) void {
+    let traw: *i8 = _zag_malloc(31 * 8);
+    let t: *i64 = traw as *i64;
+    let i: i32 = 0;
+    while (i < 31) {
+        t[i] = 0;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 16) {
+        let j: i32 = 0;
+        while (j < 16) {
+            t[i + j] = t[i + j] + a[i] * b[j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 15) {
+        t[i] = t[i] + 38 * t[i + 16];
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 16) {
+        o[i] = t[i];
+        i = i + 1;
+    }
+    x25_car25519(o);
+    x25_car25519(o);
+    _zag_free(traw);
+}
+
+fn x25_S(o: *i64, a: *i64) void {
+    x25_M(o, a, a);
+}
+
+// Field inversion via Fermat's little theorem: o = i^(p-2) mod p, using the
+// standard 254-squarings/251-multiplies addition chain (skip the multiply
+// at exponent bits 2 and 4, exactly as TweetNaCl's inv25519).
+fn x25_inv25519(o: *i64, inp: *i64) void {
+    let c: *i64 = x25_gf_new();
+    x25_gf_copy(c, inp);
+    let a: i32 = 253;
+    while (a >= 0) {
+        x25_S(c, c);
+        if (a != 2 && a != 4) {
+            x25_M(c, c, inp);
+        }
+        a = a - 1;
+    }
+    x25_gf_copy(o, c);
+}
+
+// Unpack a 32-byte little-endian u-coordinate into a gf (16 limbs of 16
+// bits each cover 256 bits; the top bit of the 256th bit is masked off
+// since u-coordinates are canonically < 2^255).
+fn x25_unpack25519(o: *i64, n: *u8) void {
+    let i: i32 = 0;
+    while (i < 16) {
+        o[i] = ((n[2 * i] as i64) & 255) + (((n[2 * i + 1] as i64) & 255) << 8);
+        i = i + 1;
+    }
+    o[15] = o[15] & 32767;
+}
+
+// Pack a gf into 32 little-endian bytes, first fully reducing mod 2^255-19.
+// Three car25519 passes normalize limbs into [0, 2^16); the two-round
+// subtract-2^255-19-and-conditionally-keep loop (m vs t, chosen via
+// sel25519 on the top-limb borrow bit) produces the canonical residue in
+// [0, p). Ported verbatim from TweetNaCl's pack25519 — the other classic
+// bug spot besides M's carry fold.
+fn x25_pack25519(o: *u8, n: *i64) void {
+    let t: *i64 = x25_gf_new();
+    let m: *i64 = x25_gf_new();
+    x25_gf_copy(t, n);
+    x25_car25519(t);
+    x25_car25519(t);
+    x25_car25519(t);
+    let j: i32 = 0;
+    while (j < 2) {
+        m[0] = t[0] - 65517;
+        let i: i32 = 1;
+        while (i < 15) {
+            m[i] = t[i] - 65535 - ((m[i - 1] >> 16) & 1);
+            m[i - 1] = m[i - 1] & 65535;
+            i = i + 1;
+        }
+        m[15] = t[15] - 32767 - ((m[14] >> 16) & 1);
+        let b: i64 = (m[15] >> 16) & 1;
+        m[14] = m[14] & 65535;
+        x25_sel25519(t, m, 1 - b);
+        j = j + 1;
+    }
+    let k: i32 = 0;
+    while (k < 16) {
+        o[2 * k] = (t[k] & 255) as u8;
+        o[2 * k + 1] = ((t[k] >> 8) & 255) as u8;
+        k = k + 1;
+    }
+}
+
+// a24 = (486662 - 2) / 4 = 121665, the Montgomery-ladder curve constant for
+// Curve25519 (v^2 = u^3 + 486662u^2 + u).
+fn x25_a24() *i64 {
+    let g: *i64 = x25_gf_new();
+    g[0] = 121665;
+    return g;
+}
+
+// RFC 7748 X25519(scalar, u): scalar and u are each 32 bytes; returns the
+// 32-byte Montgomery-ladder result (the "shared secret" / raw ECDH output).
+fn x25519(scalar: []u8, u: []u8) []u8 {
+    // Clamp a private copy of the scalar (RFC 7748 §5: clear bits 0,1,2 of
+    // byte 0, clear bit 7 and set bit 6 of byte 31).
+    let zraw: *i8 = _zag_malloc(32);
+    let z: *u8 = zraw as *u8;
+    let i: i32 = 0;
+    while (i < 32) {
+        z[i] = scalar[i];
+        i = i + 1;
+    }
+    z[0] = z[0] & 248;
+    z[31] = (z[31] & 127) | 64;
+
+    let uraw: *i8 = _zag_malloc(32);
+    let ub: *u8 = uraw as *u8;
+    i = 0;
+    while (i < 32) {
+        ub[i] = u[i];
+        i = i + 1;
+    }
+
+    let x: *i64 = x25_gf_new();
+    x25_unpack25519(x, ub);
+
+    let a: *i64 = x25_gf_new();
+    let b: *i64 = x25_gf_new();
+    let c: *i64 = x25_gf_new();
+    let d: *i64 = x25_gf_new();
+    let e: *i64 = x25_gf_new();
+    let f: *i64 = x25_gf_new();
+    let a24: *i64 = x25_a24();
+
+    i = 0;
+    while (i < 16) {
+        b[i] = x[i];
+        i = i + 1;
+    }
+    a[0] = 1;
+    d[0] = 1;
+
+    // Montgomery ladder, 255 steps from bit 254 down to bit 0. Each step is
+    // a differential add-and-double (Curve25519's xADD/xDBL combined) with
+    // a conditional swap before/after based on the scalar bit, so the
+    // sequence of field ops performed is independent of the scalar's value.
+    let ii: i32 = 254;
+    while (ii >= 0) {
+        let byte_idx: i32 = ii >> 3;
+        let bit_idx: i32 = ii & 7;
+        let r: i64 = (((z[byte_idx] as i64) & 255) >> bit_idx) & 1;
+
+        x25_sel25519(a, b, r);
+        x25_sel25519(c, d, r);
+        x25_A(e, a, c);
+        x25_Z(a, a, c);
+        x25_A(c, b, d);
+        x25_Z(b, b, d);
+        x25_S(d, e);
+        x25_S(f, a);
+        x25_M(a, c, a);
+        x25_M(c, b, e);
+        x25_A(e, a, c);
+        x25_Z(a, a, c);
+        x25_S(b, a);
+        x25_Z(c, d, f);
+        x25_M(a, c, a24);
+        x25_A(a, a, d);
+        x25_M(c, c, a);
+        x25_M(a, d, f);
+        x25_M(d, b, x);
+        x25_S(b, e);
+        x25_sel25519(a, b, r);
+        x25_sel25519(c, d, r);
+
+        ii = ii - 1;
+    }
+
+    x25_inv25519(c, c);
+    x25_M(a, a, c);
+
+    let outraw: *i8 = _zag_malloc(32);
+    let outp: *u8 = outraw as *u8;
+    x25_pack25519(outp, a);
+
+    return outp[0..32];
+}
+
+// Scalar multiplication of the base point (u = 9): the public key for a
+// private scalar, i.e. x25519(scalar, encode_le(9)).
+fn x25519_base(scalar: []u8) []u8 {
+    let braw: *i8 = _zag_malloc(32);
+    let base9: *u8 = braw as *u8;
+    let i: i32 = 0;
+    while (i < 32) {
+        base9[i] = 0;
+        i = i + 1;
+    }
+    base9[0] = 9;
+    return x25519(scalar, base9[0..32]);
+}

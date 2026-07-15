@@ -1,0 +1,155 @@
+// src/zrt/sha1.zag — SHA-1 (RFC 3174) over []u8.
+//
+// Zag has no u32 type with wrapping arithmetic, so all 32-bit math is done
+// in i64 and masked back to 32 bits with `& 4294967295` (0xFFFFFFFF) after
+// every add/shift. Values are always kept non-negative and < 2^32, so `>>`
+// behaves as a logical shift.
+//
+// Public entry points: sha1(msg) -> 20-byte malloc'd digest slice,
+// sha1_hex(msg) -> 40-char lowercase hex string.
+
+@import("str.zag")
+
+fn sha1_mask() i64 { return 4294967295; }
+
+// Rotate a masked 32-bit value left by n (1 <= n <= 31).
+fn sha1_rotl(x: i64, n: i64) i64 {
+    let xm: i64 = x & 4294967295;
+    return ((xm << n) | (xm >> (32 - n))) & 4294967295;
+}
+
+struct Sha1State {
+    h0: i64,
+    h1: i64,
+    h2: i64,
+    h3: i64,
+    h4: i64,
+}
+
+// Process one 64-byte block starting at `off` in `data`, using `w` as the
+// 80-entry i64 schedule scratch buffer.
+fn sha1_block(st: *Sha1State, data: *u8, off: i32, w: *i64) void {
+    let t: i32 = 0;
+    while (t < 16) {
+        let base: i32 = off + t * 4;
+        w[t] = (((data[base] as i64) & 255) << 24)
+             | (((data[base + 1] as i64) & 255) << 16)
+             | (((data[base + 2] as i64) & 255) << 8)
+             | ((data[base + 3] as i64) & 255);
+        t = t + 1;
+    }
+    while (t < 80) {
+        w[t] = sha1_rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1);
+        t = t + 1;
+    }
+
+    let a: i64 = st.*.h0;
+    let b: i64 = st.*.h1;
+    let c: i64 = st.*.h2;
+    let d: i64 = st.*.h3;
+    let e: i64 = st.*.h4;
+
+    t = 0;
+    while (t < 80) {
+        let f: i64 = 0;
+        let k: i64 = 0;
+        if (t < 20) {
+            f = (b & c) | ((b ^ 4294967295) & d);
+            k = 1518500249;          // 0x5A827999
+        } else if (t < 40) {
+            f = b ^ c ^ d;
+            k = 1859775393;          // 0x6ED9EBA1
+        } else if (t < 60) {
+            f = (b & c) | (b & d) | (c & d);
+            k = 2400959708;          // 0x8F1BBCDC
+        } else {
+            f = b ^ c ^ d;
+            k = 3395469782;          // 0xCA62C1D6
+        }
+        let temp: i64 = (sha1_rotl(a, 5) + f + e + k + w[t]) & 4294967295;
+        e = d;
+        d = c;
+        c = sha1_rotl(b, 30);
+        b = a;
+        a = temp;
+        t = t + 1;
+    }
+
+    st.*.h0 = (st.*.h0 + a) & 4294967295;
+    st.*.h1 = (st.*.h1 + b) & 4294967295;
+    st.*.h2 = (st.*.h2 + c) & 4294967295;
+    st.*.h3 = (st.*.h3 + d) & 4294967295;
+    st.*.h4 = (st.*.h4 + e) & 4294967295;
+}
+
+// Write one 32-bit word big-endian into out[off..off+4].
+fn sha1_put_be32(out: *u8, off: i32, v: i64) void {
+    out[off] = ((v >> 24) & 255) as u8;
+    out[off + 1] = ((v >> 16) & 255) as u8;
+    out[off + 2] = ((v >> 8) & 255) as u8;
+    out[off + 3] = (v & 255) as u8;
+}
+
+// SHA-1 digest of `msg`: 20 malloc'd bytes.
+fn sha1(msg: []u8) []u8 {
+    // padded length: msg + 0x80 + zeros + 8-byte big-endian bit length,
+    // rounded up to a multiple of 64.
+    let total: i32 = msg.len + 1 + 8;
+    let rem: i32 = total % 64;
+    if (rem != 0) { total = total + (64 - rem); }
+
+    let padded_raw: *i8 = _zag_malloc(total);
+    let padded: *u8 = padded_raw as *u8;
+    let i: i32 = 0;
+    while (i < msg.len) {
+        padded[i] = msg[i];
+        i = i + 1;
+    }
+    padded[msg.len] = 128;   // 0x80
+    i = msg.len + 1;
+    while (i < total - 8) {
+        padded[i] = 0;
+        i = i + 1;
+    }
+    let bitlen: i64 = (msg.len as i64) * 8;
+    let j: i32 = 0;
+    while (j < 8) {
+        padded[total - 1 - j] = ((bitlen >> (j * 8)) & 255) as u8;
+        j = j + 1;
+    }
+
+    let st: Sha1State = Sha1State{
+        .h0 = 1732584193,    // 0x67452301
+        .h1 = 4023233417,    // 0xEFCDAB89
+        .h2 = 2562383102,    // 0x98BADCFE
+        .h3 = 271733878,     // 0x10325476
+        .h4 = 3285377520,    // 0xC3D2E1F0
+    };
+    let pst: *Sha1State = &st;
+
+    let w_raw: *i8 = _zag_malloc(80 * 8);
+    let w: *i64 = w_raw as *i64;
+
+    let off: i32 = 0;
+    while (off < total) {
+        sha1_block(pst, padded, off, w);
+        off = off + 64;
+    }
+
+    _zag_free(w_raw);
+    _zag_free(padded_raw);
+
+    let out_raw: *i8 = _zag_malloc(20);
+    let out: *u8 = out_raw as *u8;
+    sha1_put_be32(out, 0, st.h0);
+    sha1_put_be32(out, 4, st.h1);
+    sha1_put_be32(out, 8, st.h2);
+    sha1_put_be32(out, 12, st.h3);
+    sha1_put_be32(out, 16, st.h4);
+    return out[0..20];
+}
+
+// Convenience: lowercase hex of the digest.
+fn sha1_hex(msg: []u8) []u8 {
+    return str_to_hex(sha1(msg));
+}

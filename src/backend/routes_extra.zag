@@ -1,0 +1,388 @@
+// backend/routes_extra.zag — low-priority /api routes the frontend polls:
+// workspace file search, agent settings, mode, billing/spend (informational),
+// feedback, and a few provider sub-routes not covered by routes.zag.
+@import("app.zag")
+
+// ── tiny query-string helper (no percent-decoding; local single-user tool) ────
+// Named distinctly (not `query_param`) to avoid colliding with the
+// same-purpose helper defined in routes_git.zag — Zag's namespace is a flat
+// merge across the whole program.
+
+fn xq_param(query: []u8, key: []u8) []u8 {
+    let s: []u8 = query;
+    let go: bool = true;
+    while (go) {
+        let amp: SplitResult = str_split_first(s, '&');
+        let pair: []u8 = amp.head;
+        let eq: SplitResult = str_split_first(pair, '=');
+        if (str_eq(eq.head, key)) { return eq.tail; }
+        if (amp.found) { s = amp.tail; } else { go = false; }
+    }
+    return "";
+}
+
+// Wrap `s` in single quotes for safe embedding in a `sh -c` command line.
+fn shell_quote(s: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '\'' as u8);
+    let i: i32 = 0;
+    while (i < s.len) {
+        let c: u8 = s[i];
+        if (c == '\'' as u8) {
+            sb_app(&sb, "'\\''");
+        } else {
+            sb_ch(&sb, c);
+        }
+        i = i + 1;
+    }
+    sb_ch(&sb, '\'' as u8);
+    return sb_slice(&sb);
+}
+
+// ── workspace ───────────────────────────────────────────────────────────────
+
+// Turn newline-separated `find` output into a capped JSON string array,
+// stripping the leading "./" find prefixes.
+fn workspace_files_json(out: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '[' as u8);
+    let start: i32 = 0;
+    let i: i32 = 0;
+    let count: i32 = 0;
+    let first: bool = true;
+    while (i <= out.len) {
+        let at_end: bool = i == out.len;
+        if (at_end || out[i] == 10) {
+            let line: []u8 = str_trim(out[start..i]);
+            if (line.len > 0 && count < 500) {
+                let rel: []u8 = line;
+                if (str_starts_with(rel, "./")) { rel = rel[2..rel.len]; }
+                if (!first) { sb_ch(&sb, ',' as u8); }
+                first = false;
+                sb_ch(&sb, '"' as u8);
+                sb_app(&sb, str_escape_json(rel));
+                sb_ch(&sb, '"' as u8);
+                count = count + 1;
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    sb_ch(&sb, ']' as u8);
+    return sb_slice(&sb);
+}
+
+fn routes_workspace_files(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) void {
+    let q: []u8 = xq_param(req.*.query, "q");
+    // NOTE: grep must run BEFORE head, with head always the pipeline's last
+    // stage. Putting head in the middle (find | head -500 | grep) triggers a
+    // native _zag_exec_capture bug: when `head` actually truncates its input
+    // (this repo has 3000+ matching files, so it always does) and a further
+    // stage reads head's output, the capture returns empty instead of the
+    // truncated text — reproduced in isolation against the runtime primitive,
+    // not fixable from this file. find | grep | head avoids the pathological
+    // ordering entirely and is also the more correct semantics (cap applied
+    // to the filtered set, not the raw pre-filter listing).
+    let cmd: []u8 = "find . -type f -not -path './.git/*' -not -path './node_modules/*' -not -path './build/*' -not -path './dist/*'";
+    if (q.len > 0) {
+        cmd = _zag_str_concat(cmd, _zag_str_concat(" | grep -i ", shell_quote(q)));
+    }
+    cmd = _zag_str_concat(cmd, " | head -500");
+    let out: []u8 = util_exec_capture(cmd);
+    http_send_json(srv, conn, 200, ok_data(workspace_files_json(out)));
+    let _keep: *AppState = app;
+}
+
+// ── agent settings ────────────────────────────────────────────────────────────
+
+fn agent_settings_path(app: *AppState) []u8 {
+    return _zag_str_concat(app.*.data_dir, "/agent-settings.json");
+}
+
+fn agent_settings_defaults_json() []u8 {
+    return "{\"ruleEnforcementLevel\":\"strict\",\"agentExecutionMode\":\"auto\",\"preferencesEnabled\":true,\"allowExternalPaths\":false,\"criticGateEnabled\":true,\"criticEnforcesPreferences\":true,\"autoApplySafeFixes\":false,\"confirmRuleViolations\":true,\"autoRunTools\":true,\"agentMemoryEnabled\":true,\"agentCanUpdatePreferences\":false,\"maxCriticIterations\":3,\"approvalThresholdFiles\":5,\"approvalThresholdLines\":100,\"localWebSearch\":\"fallback\",\"multiSourceResearch\":true,\"contextPruningEnabled\":true,\"contextKeepRecentTurns\":3,\"contextPruneMinChars\":600,\"contextSelfAwareness\":true,\"reasoningExpandedByDefault\":true,\"managerModelAccess\":{},\"managerNotes\":{}}";
+}
+
+fn agent_settings_keys() ArrayList[[]u8] {
+    let keys: ArrayList[[]u8] = make[[]u8](24);
+    push[[]u8](&keys, "ruleEnforcementLevel");
+    push[[]u8](&keys, "agentExecutionMode");
+    push[[]u8](&keys, "preferencesEnabled");
+    push[[]u8](&keys, "allowExternalPaths");
+    push[[]u8](&keys, "criticGateEnabled");
+    push[[]u8](&keys, "criticEnforcesPreferences");
+    push[[]u8](&keys, "autoApplySafeFixes");
+    push[[]u8](&keys, "confirmRuleViolations");
+    push[[]u8](&keys, "autoRunTools");
+    push[[]u8](&keys, "agentMemoryEnabled");
+    push[[]u8](&keys, "agentCanUpdatePreferences");
+    push[[]u8](&keys, "maxCriticIterations");
+    push[[]u8](&keys, "approvalThresholdFiles");
+    push[[]u8](&keys, "approvalThresholdLines");
+    push[[]u8](&keys, "localWebSearch");
+    push[[]u8](&keys, "multiSourceResearch");
+    push[[]u8](&keys, "contextPruningEnabled");
+    push[[]u8](&keys, "contextKeepRecentTurns");
+    push[[]u8](&keys, "contextPruneMinChars");
+    push[[]u8](&keys, "contextSelfAwareness");
+    push[[]u8](&keys, "reasoningExpandedByDefault");
+    push[[]u8](&keys, "managerModelAccess");
+    push[[]u8](&keys, "managerNotes");
+    return keys;
+}
+
+// Field precedence: incoming partial body > persisted current settings > defaults.
+// `body` is null for a plain GET (pure merge of current-over-defaults).
+fn settings_field(body: ?*JNode, current: ?*JNode, defaults: ?*JNode, key: []u8, sb: *StrBuf) void {
+    let bval: ?*JNode = json_get(body, key);
+    if (bval) |v| {
+        json_write_node(sb, v);
+    } else {
+        let cval: ?*JNode = json_get(current, key);
+        if (cval) |v2| {
+            json_write_node(sb, v2);
+        } else {
+            let dval: ?*JNode = json_get(defaults, key);
+            if (dval) |v3| {
+                json_write_node(sb, v3);
+            } else {
+                sb_app(sb, "null");
+            }
+        }
+    }
+}
+
+fn agent_settings_merge(body: ?*JNode, current: ?*JNode) []u8 {
+    let defaults: ?*JNode = json_parse(agent_settings_defaults_json());
+    let keys: ArrayList[[]u8] = agent_settings_keys();
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '{' as u8);
+    let i: i32 = 0;
+    while (i < keys.len) {
+        if (i > 0) { sb_ch(&sb, ',' as u8); }
+        let key: []u8 = get[[]u8](keys, i);
+        sb_ch(&sb, '"' as u8);
+        sb_app(&sb, key);
+        sb_app(&sb, "\":");
+        settings_field(body, current, defaults, key, &sb);
+        i = i + 1;
+    }
+    sb_ch(&sb, '}' as u8);
+    return sb_slice(&sb);
+}
+
+fn routes_agent_settings_get(srv: *HttpServer, conn: *Conn, app: *AppState) void {
+    let content: []u8 = util_read_or_empty(agent_settings_path(app));
+    let current: ?*JNode = json_parse(content);
+    let merged: []u8 = agent_settings_merge(null, current);
+    let body: []u8 = _zag_str_concat(_zag_str_concat("{\"ok\":true,\"data\":", merged), ",\"message\":\"ok\"}");
+    http_send_json(srv, conn, 200, body);
+}
+
+fn routes_agent_settings_put(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) void {
+    let path: []u8 = agent_settings_path(app);
+    let current: ?*JNode = json_parse(util_read_or_empty(path));
+    let incoming: ?*JNode = json_parse(req.*.body);
+    let merged: []u8 = agent_settings_merge(incoming, current);
+    util_write_atomic(path, merged);
+    http_send_json(srv, conn, 200, ok_data(merged));
+}
+
+fn routes_agent_settings_reset(srv: *HttpServer, conn: *Conn, app: *AppState) void {
+    util_unlink(agent_settings_path(app));
+    http_send_json(srv, conn, 200, ok_data(agent_settings_defaults_json()));
+}
+
+// ── mode ──────────────────────────────────────────────────────────────────────
+
+fn mode_path(app: *AppState) []u8 {
+    return _zag_str_concat(app.*.data_dir, "/mode.txt");
+}
+
+fn mode_current(app: *AppState) []u8 {
+    let m: []u8 = str_trim(util_read_or_empty(mode_path(app)));
+    if (m.len == 0) { return "advanced"; }
+    return m;
+}
+
+fn mode_json_body(mode: []u8) []u8 {
+    return _zag_str_concat(_zag_str_concat("{\"ok\":true,\"data\":{\"mode\":\"", str_escape_json(mode)), "\"}}");
+}
+
+// ── billing / spend (informational only — no real backend) ────────────────────
+
+fn routes_billing_credits(srv: *HttpServer, conn: *Conn) void {
+    http_send_json(srv, conn, 200, "{\"balance\":0,\"currency\":\"USD\",\"plan\":\"local\",\"unlimited\":true}");
+}
+
+fn routes_spend_status(srv: *HttpServer, conn: *Conn, req: *Request) void {
+    let sid: []u8 = xq_param(req.*.query, "sessionId");
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"ok\":true,\"data\":{\"sessionId\":\"");
+    sb_app(&sb, str_escape_json(sid));
+    sb_app(&sb, "\",\"spent\":0,\"cap\":null}}");
+    http_send_json(srv, conn, 200, sb_slice(&sb));
+}
+
+fn spend_caps_path(app: *AppState) []u8 {
+    return _zag_str_concat(app.*.data_dir, "/spend-caps.json");
+}
+
+// ── feedback ──────────────────────────────────────────────────────────────────
+
+fn feedback_path(app: *AppState) []u8 {
+    return _zag_str_concat(app.*.data_dir, "/feedback.jsonl");
+}
+
+fn feedback_append(app: *AppState, raw_body: []u8) void {
+    let path: []u8 = feedback_path(app);
+    let cur: []u8 = util_read_or_empty(path);
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, cur);
+    sb_app(&sb, raw_body);
+    sb_ch(&sb, 10 as u8);
+    util_write_atomic(path, sb_slice(&sb));
+}
+
+// ── providers (extra sub-routes) ───────────────────────────────────────────────
+
+fn providers_available_json(app: *AppState) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '[' as u8);
+    let i: i32 = 0;
+    while (i < app.*.providers.len) {
+        if (i > 0) { sb_ch(&sb, ',' as u8); }
+        let p: *Provider = get[*Provider](app.*.providers, i);
+        sb_app(&sb, "{\"name\":\"");
+        sb_app(&sb, str_escape_json(p.*.name));
+        sb_app(&sb, "\",\"authMode\":\"");
+        sb_app(&sb, str_escape_json(p.*.auth_mode));
+        sb_app(&sb, "\"}");
+        i = i + 1;
+    }
+    sb_ch(&sb, ']' as u8);
+    return sb_slice(&sb);
+}
+
+fn routes_providers_custom(srv: *HttpServer, conn: *Conn, req: *Request) void {
+    let body: ?*JNode = json_parse(req.*.body);
+    let label: []u8 = json_str(json_get(body, "label"));
+    let kind: []u8 = json_str(json_get(body, "kind"));
+    if (kind.len == 0) { kind = "openai"; }
+    let id: []u8 = util_nanoid(12);
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"id\":\"");
+    sb_app(&sb, id);
+    sb_app(&sb, "\",\"label\":\"");
+    sb_app(&sb, str_escape_json(label));
+    sb_app(&sb, "\",\"kind\":\"");
+    sb_app(&sb, str_escape_json(kind));
+    sb_app(&sb, "\"}");
+    http_send_json(srv, conn, 200, ok_data(sb_slice(&sb)));
+}
+
+// ── dispatch ──────────────────────────────────────────────────────────────────
+
+fn routes_extra(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) bool {
+    let path: []u8 = req.*.path;
+    let method: []u8 = req.*.method;
+
+    // workspace
+    if (str_eq(path, "/api/workspace/home") && str_eq(method, "GET")) {
+        let home: []u8 = _zag_getenv("HOME");
+        http_send_json(srv, conn, 200, ok_data(_zag_str_concat(_zag_str_concat("\"", str_escape_json(home)), "\"")));
+        return true;
+    }
+    if (str_eq(path, "/api/workspace/files") && str_eq(method, "GET")) {
+        routes_workspace_files(srv, conn, req, app);
+        return true;
+    }
+    if (str_eq(path, "/api/workspace/register") && str_eq(method, "POST")) {
+        let _b: ?*JNode = json_parse(req.*.body);
+        let _root: []u8 = json_str(json_get(_b, "root"));
+        http_send_json(srv, conn, 200, "{\"ok\":true}");
+        return true;
+    }
+
+    // agent settings
+    if (str_eq(path, "/api/agent/settings/reset") && str_eq(method, "POST")) {
+        routes_agent_settings_reset(srv, conn, app);
+        return true;
+    }
+    if (str_eq(path, "/api/agent/settings") && str_eq(method, "GET")) {
+        routes_agent_settings_get(srv, conn, app);
+        return true;
+    }
+    if (str_eq(path, "/api/agent/settings") && str_eq(method, "PUT")) {
+        routes_agent_settings_put(srv, conn, req, app);
+        return true;
+    }
+
+    // mode
+    if (str_eq(path, "/api/mode/toggle") && str_eq(method, "POST")) {
+        let cur: []u8 = mode_current(app);
+        let next: []u8 = "beginner";
+        if (str_eq(cur, "beginner")) { next = "advanced"; }
+        util_write_atomic(mode_path(app), next);
+        http_send_json(srv, conn, 200, mode_json_body(next));
+        return true;
+    }
+    if (str_eq(path, "/api/mode") && str_eq(method, "GET")) {
+        http_send_json(srv, conn, 200, mode_json_body(mode_current(app)));
+        return true;
+    }
+    if (str_eq(path, "/api/mode") && str_eq(method, "PUT")) {
+        let body: ?*JNode = json_parse(req.*.body);
+        let m: []u8 = json_str(json_get(body, "mode"));
+        if (m.len == 0) { m = "advanced"; }
+        util_write_atomic(mode_path(app), m);
+        http_send_json(srv, conn, 200, mode_json_body(m));
+        return true;
+    }
+
+    // billing / spend
+    if (str_eq(path, "/api/billing/credits") && str_eq(method, "GET")) {
+        routes_billing_credits(srv, conn);
+        return true;
+    }
+    if (str_eq(path, "/api/spend/status") && str_eq(method, "GET")) {
+        routes_spend_status(srv, conn, req);
+        return true;
+    }
+    if (str_eq(path, "/api/spend-caps/config") && str_eq(method, "GET")) {
+        http_send_json(srv, conn, 200, "{\"ok\":true,\"data\":{\"enabled\":false,\"dailyCapUsd\":null,\"perSessionCapUsd\":null}}");
+        return true;
+    }
+    if (str_eq(path, "/api/spend-caps/config") && str_eq(method, "PUT")) {
+        util_write_atomic(spend_caps_path(app), req.*.body);
+        http_send_json(srv, conn, 200, "{\"ok\":true}");
+        return true;
+    }
+    if (str_eq(path, "/api/spend-caps/status") && str_eq(method, "GET")) {
+        http_send_json(srv, conn, 200, "{\"ok\":true,\"data\":{\"enabled\":false,\"todaySpendUsd\":0,\"paused\":false}}");
+        return true;
+    }
+
+    // feedback
+    if (str_eq(path, "/api/feedback") && str_eq(method, "POST")) {
+        feedback_append(app, req.*.body);
+        http_send_json(srv, conn, 200, "{\"ok\":true}");
+        return true;
+    }
+
+    // providers — extra sub-routes (routes.zag owns the base /api/providers[/:name] surface)
+    if (str_eq(path, "/api/providers/available") && str_eq(method, "GET")) {
+        http_send_json(srv, conn, 200, ok_data(providers_available_json(app)));
+        return true;
+    }
+    if (str_eq(path, "/api/providers/detect") && str_eq(method, "GET")) {
+        http_send_json(srv, conn, 200, "{\"ok\":true,\"data\":{\"claude\":false,\"codex\":false,\"gemini\":false,\"grok\":false,\"cursor\":false}}");
+        return true;
+    }
+    if (str_eq(path, "/api/providers/custom") && str_eq(method, "POST")) {
+        routes_providers_custom(srv, conn, req);
+        return true;
+    }
+
+    return false;
+}

@@ -1,0 +1,31 @@
+@import("../src/zrt/tls.zag")
+fn main() i32 {
+    let dns: DnsResult = dns_resolve("api.openai.com");
+    _zag_println(_zag_str_concat("resolved ok=", _zag_i64_to_str(dns.ok as i64)));
+    let fd: i64 = net_connect_ip(dns.ip0, dns.ip1, dns.ip2, dns.ip3, 443);
+    _zag_println(_zag_str_concat("connect fd=", _zag_i64_to_str(fd)));
+    if (fd < 0) { return 1; }
+    net_set_rcvtimeo(fd, 10);
+    // build + send clienthello
+    let priv: []u8 = tls_rand(32);
+    let pub: []u8 = x25519_base(priv);
+    let ch: []u8 = tls_client_hello("api.openai.com", tls_rand(32), tls_rand(32), pub);
+    // send raw: record header + ch
+    let hdr: *i8 = _zag_malloc(5);
+    hdr[0] = 22 as i8; hdr[1] = 3 as i8; hdr[2] = 1 as i8;
+    hdr[3] = ((ch.len >> 8) & 255) as i8; hdr[4] = (ch.len & 255) as i8;
+    let w1: i64 = _zag_raw_syscall(1, fd, hdr as i64, 5, 0, 0, 0);          // write header
+    let w2: i64 = _zag_raw_syscall(1, fd, _zag_slice_ptr(ch) as i64, ch.len as i64, 0, 0, 0);  // write ch
+    _zag_println(_zag_str_concat("wrote hdr=", _zag_i64_to_str(w1)));
+    _zag_println(_zag_str_concat("wrote ch=", _zag_i64_to_str(w2)));
+    // raw read
+    let buf: *i8 = _zag_malloc(4096);
+    let n: i64 = _zag_raw_syscall(0, fd, buf as i64, 4096, 0, 0, 0);
+    _zag_println(_zag_str_concat("read n=", _zag_i64_to_str(n)));
+    if (n > 0) {
+        let cap: i32 = n as i32;
+        if (cap > 40) { cap = 40; }
+        _zag_println(_zag_str_concat("first bytes hex: ", str_to_hex(buf[0..cap])));
+    }
+    return 0;
+}

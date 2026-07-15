@@ -1,0 +1,152 @@
+// backend/routes_mcp.zag — MCP (Model Context Protocol) JSON-RPC 2.0 server
+// at /mcp. Exposes Koryphaios's own tool executor (bash/read_file/write_file/
+// edit_file/ls/grep/glob) to any MCP-capable client over plain HTTP POST.
+//
+// Spec-minimal: initialize, notifications/initialized, tools/list, tools/call.
+// No SSE/streaming — these tools are strictly request/response.
+@import("tools.zag")
+
+// ── JSON-RPC envelope helpers ─────────────────────────────────────────────────
+
+// Echo the request's "id" verbatim (number/string/null) using the JSON writer.
+fn mcp_id_str(body: *JNode) []u8 {
+    let idn: ?*JNode = json_get(body, "id");
+    if (idn) |v| {
+        return json_write(v);
+    }
+    return "null";
+}
+
+fn mcp_ok(id_json: []u8, result_json: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"jsonrpc\":\"2.0\",\"id\":");
+    sb_app(&sb, id_json);
+    sb_app(&sb, ",\"result\":");
+    sb_app(&sb, result_json);
+    sb_ch(&sb, '}' as u8);
+    return sb_slice(&sb);
+}
+
+fn mcp_err(id_json: []u8, code: i32, msg: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"jsonrpc\":\"2.0\",\"id\":");
+    sb_app(&sb, id_json);
+    sb_app(&sb, ",\"error\":{\"code\":");
+    sb_int(&sb, code as i64);
+    sb_app(&sb, ",\"message\":\"");
+    sb_app(&sb, str_escape_json(msg));
+    sb_app(&sb, "\"}}");
+    return sb_slice(&sb);
+}
+
+// ── tools/list (MCP format: name/description/inputSchema) ────────────────────
+
+fn mcp_tool_def(sb: *StrBuf, first: bool, name: []u8, desc: []u8, schema: []u8) void {
+    if (!first) { sb_ch(sb, ',' as u8); }
+    sb_app(sb, "{\"name\":\"");
+    sb_app(sb, name);
+    sb_app(sb, "\",\"description\":\"");
+    sb_app(sb, str_escape_json(desc));
+    sb_app(sb, "\",\"inputSchema\":");
+    sb_app(sb, schema);
+    sb_ch(sb, '}' as u8);
+}
+
+// Hardcoded mirror of tools_base() (tools.zag) in MCP tool shape.
+fn mcp_tools_list_json() []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"tools\":[");
+    mcp_tool_def(&sb, true, "bash", "Run a bash command in the project directory and return combined stdout/stderr.",
+        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The shell command to run.\"}},\"required\":[\"command\"]}");
+    mcp_tool_def(&sb, false, "read_file", "Read a UTF-8 text file and return its contents.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}");
+    mcp_tool_def(&sb, false, "write_file", "Create or overwrite a file with the given content.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}");
+    mcp_tool_def(&sb, false, "edit_file", "Replace the single unique occurrence of old_str with new_str in a file.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_str\":{\"type\":\"string\"},\"new_str\":{\"type\":\"string\"}},\"required\":[\"path\",\"old_str\",\"new_str\"]}");
+    mcp_tool_def(&sb, false, "ls", "List a directory in long format.",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}");
+    mcp_tool_def(&sb, false, "grep", "Recursively search files for a regex pattern (grep -rn).",
+        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}");
+    mcp_tool_def(&sb, false, "glob", "Find files by name pattern (find -name).",
+        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}");
+    sb_app(&sb, "]}");
+    return sb_slice(&sb);
+}
+
+// ── tools/call ─────────────────────────────────────────────────────────────────
+
+fn mcp_tools_call_json(app: *AppState, body: *JNode) []u8 {
+    let params: ?*JNode = json_get(body, "params");
+    let tname: []u8 = json_str(json_get(params, "name"));
+    let targs: ?*JNode = json_get(params, "arguments");
+    let res: ToolResult = tool_execute(app, tname, targs);
+    let out: []u8 = res.output;
+    if (out.len > 30000) { out = out[0..30000]; }
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"content\":[{\"type\":\"text\",\"text\":\"");
+    sb_app(&sb, str_escape_json(out));
+    sb_app(&sb, "\"}],\"isError\":");
+    if (res.is_error) { sb_app(&sb, "true"); } else { sb_app(&sb, "false"); }
+    sb_ch(&sb, '}' as u8);
+    return sb_slice(&sb);
+}
+
+// ── method dispatch (body is a parsed JSON-RPC request object) ───────────────
+
+fn routes_mcp_dispatch(srv: *HttpServer, conn: *Conn, app: *AppState, body: *JNode) bool {
+    let method: []u8 = json_str(json_get(body, "method"));
+    let id_json: []u8 = mcp_id_str(body);
+
+    if (str_eq(method, "initialize")) {
+        http_send_json(srv, conn, 200, mcp_ok(id_json,
+            "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"koryphaios-zag\",\"version\":\"1.0.0\"}}"));
+        return true;
+    }
+
+    if (str_eq(method, "notifications/initialized")) {
+        // Notification: no id, no JSON-RPC response body — just ack the HTTP request.
+        http_respond_full(srv, conn, 202, "", http_cors_headers(), "");
+        return true;
+    }
+
+    if (str_eq(method, "tools/list")) {
+        http_send_json(srv, conn, 200, mcp_ok(id_json, mcp_tools_list_json()));
+        return true;
+    }
+
+    if (str_eq(method, "tools/call")) {
+        http_send_json(srv, conn, 200, mcp_ok(id_json, mcp_tools_call_json(app, body)));
+        return true;
+    }
+
+    http_send_json(srv, conn, 200, mcp_err(id_json, 0 - 32601, "Method not found"));
+    return true;
+}
+
+// ── entry point ────────────────────────────────────────────────────────────────
+
+fn routes_mcp(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) bool {
+    if (!auth_check(app, http_header_get(req, "authorization"))) {
+        http_send_json(srv, conn, 200, mcp_err("null", 0 - 32001, "Unauthorized"));
+        return true;
+    }
+
+    if (str_eq(req.*.method, "GET")) {
+        http_send_json(srv, conn, 200, "{\"name\":\"koryphaios-zag MCP\",\"transport\":\"http\"}");
+        return true;
+    }
+
+    if (!str_eq(req.*.method, "POST")) {
+        http_send_text(srv, conn, 405, "Method Not Allowed");
+        return true;
+    }
+
+    let body: ?*JNode = json_parse(req.*.body);
+    if (body) |b| {
+        return routes_mcp_dispatch(srv, conn, app, b);
+    } else {
+        http_send_json(srv, conn, 200, mcp_err("null", 0 - 32700, "Parse error"));
+        return true;
+    }
+}

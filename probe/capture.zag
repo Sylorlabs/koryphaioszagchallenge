@@ -1,0 +1,26 @@
+@import("../zagstd/rt.zag")
+
+fn main() i32 {
+    let out: []u8 = _zag_exec_capture("echo hello-from-native-capture && echo second-line");
+    _zag_print("len=");
+    _zag_println(_zag_i64_to_str(out.len as i64));
+    _zag_print("[");
+    _zag_print(out);
+    _zag_println("]");
+
+    // command that reads env (proves envp forwarding) + pipes
+    let pw: []u8 = _zag_exec_capture("pwd");
+    _zag_print("pwd=");
+    _zag_print(pw);
+
+    // larger output than one 64KB buffer to exercise the realloc grow path
+    let big: []u8 = _zag_exec_capture("seq 1 20000 | tr '\\n' ' '");
+    _zag_print("big-len=");
+    _zag_println(_zag_i64_to_str(big.len as i64));
+
+    // empty output
+    let empty: []u8 = _zag_exec_capture("true");
+    _zag_print("empty-len=");
+    _zag_println(_zag_i64_to_str(empty.len as i64));
+    return 0;
+}

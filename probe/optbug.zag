@@ -1,0 +1,22 @@
+@import("../zagstd/rt.zag")
+
+fn maybe_str(x: i32) ?[]u8 {
+    if (x > 0) { return "abcde"; }
+    return null;
+}
+
+fn main() i32 {
+    let o: ?[]u8 = maybe_str(1);
+    if (o) |v| {
+        // 1. .len on captured value
+        _zag_print("v.len="); _zag_println(_zag_i64_to_str(v.len as i64));
+        // 2. index [0] on captured value
+        _zag_print("v[0]="); _zag_println(_zag_i64_to_str((v[0] as i32) as i64));
+        // 3. compare: assign to outer then index
+        let outer: []u8 = "";
+        outer = v;
+        _zag_print("outer.len="); _zag_println(_zag_i64_to_str(outer.len as i64));
+        _zag_print("outer[0]="); _zag_println(_zag_i64_to_str((outer[0] as i32) as i64));
+    }
+    return 0;
+}

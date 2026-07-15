@@ -1,0 +1,446 @@
+// src/zrt/tls_hash.zag — SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 2104 / FIPS
+// 198-1) and HKDF-SHA256 (RFC 5869), for the from-scratch TLS 1.3 client's
+// key schedule and transcript hash.
+//
+// Same style as sha1.zag: Zag has no wrapping u32 type, so all 32-bit math
+// is done in i64 and masked back to 32 bits with `& 4294967295` (0xFFFFFFFF)
+// after every add/xor-with-shift/rotate. Values are always kept non-negative
+// and < 2^32, so `>>` behaves as a logical shift.
+//
+// Public entry points (exact signatures required by the TLS layer):
+//   fn sha256(msg: []u8) []u8                                    -- one-shot
+//   struct Sha256Ctx { ... }
+//   fn sha256_new() Sha256Ctx
+//   fn sha256_update(ctx: *Sha256Ctx, data: []u8) void
+//   fn sha256_digest(ctx: *Sha256Ctx) []u8   -- non-destructive, resumable
+//   fn hmac_sha256(key: []u8, msg: []u8) []u8
+//   fn hkdf_extract(salt: []u8, ikm: []u8) []u8
+//   fn hkdf_expand(prk: []u8, info: []u8, length: i32) []u8
+//
+// All internal helpers are prefixed `h256_` to stay collision-free in the
+// flat, whole-program-merged Zag namespace.
+
+@import("str.zag")
+
+// ── bit ops ───────────────────────────────────────────────────────────────────
+
+// Rotate a masked 32-bit value right by n (1 <= n <= 31).
+fn h256_rotr(x: i64, n: i64) i64 {
+    let xm: i64 = x & 4294967295;
+    return ((xm >> n) | (xm << (32 - n))) & 4294967295;
+}
+
+// Build the 64 SHA-256 round constants K[0..63] into a fresh malloc'd i64
+// buffer (decimal forms of the FIPS 180-4 hex constants). Caller frees the
+// raw allocation with `_zag_free(k as *i8)`.
+fn h256_k_table() *i64 {
+    let raw: *i8 = _zag_malloc(64 * 8);
+    let k: *i64 = raw as *i64;
+    k[0] = 1116352408;
+    k[1] = 1899447441;
+    k[2] = 3049323471;
+    k[3] = 3921009573;
+    k[4] = 961987163;
+    k[5] = 1508970993;
+    k[6] = 2453635748;
+    k[7] = 2870763221;
+    k[8] = 3624381080;
+    k[9] = 310598401;
+    k[10] = 607225278;
+    k[11] = 1426881987;
+    k[12] = 1925078388;
+    k[13] = 2162078206;
+    k[14] = 2614888103;
+    k[15] = 3248222580;
+    k[16] = 3835390401;
+    k[17] = 4022224774;
+    k[18] = 264347078;
+    k[19] = 604807628;
+    k[20] = 770255983;
+    k[21] = 1249150122;
+    k[22] = 1555081692;
+    k[23] = 1996064986;
+    k[24] = 2554220882;
+    k[25] = 2821834349;
+    k[26] = 2952996808;
+    k[27] = 3210313671;
+    k[28] = 3336571891;
+    k[29] = 3584528711;
+    k[30] = 113926993;
+    k[31] = 338241895;
+    k[32] = 666307205;
+    k[33] = 773529912;
+    k[34] = 1294757372;
+    k[35] = 1396182291;
+    k[36] = 1695183700;
+    k[37] = 1986661051;
+    k[38] = 2177026350;
+    k[39] = 2456956037;
+    k[40] = 2730485921;
+    k[41] = 2820302411;
+    k[42] = 3259730800;
+    k[43] = 3345764771;
+    k[44] = 3516065817;
+    k[45] = 3600352804;
+    k[46] = 4094571909;
+    k[47] = 275423344;
+    k[48] = 430227734;
+    k[49] = 506948616;
+    k[50] = 659060556;
+    k[51] = 883997877;
+    k[52] = 958139571;
+    k[53] = 1322822218;
+    k[54] = 1537002063;
+    k[55] = 1747873779;
+    k[56] = 1955562222;
+    k[57] = 2024104815;
+    k[58] = 2227730452;
+    k[59] = 2361852424;
+    k[60] = 2428436474;
+    k[61] = 2756734187;
+    k[62] = 3204031479;
+    k[63] = 3329325298;
+    return k;
+}
+
+// ── incremental state ────────────────────────────────────────────────────────
+
+struct Sha256Ctx {
+    h0: i64,
+    h1: i64,
+    h2: i64,
+    h3: i64,
+    h4: i64,
+    h5: i64,
+    h6: i64,
+    h7: i64,
+    block: *u8,   // 64-byte buffer holding the current unprocessed tail
+    buflen: i32,  // bytes currently held in `block` (0..63)
+    total: i64,   // total message bytes fed so far, across all updates
+}
+
+// Compress exactly one 64-byte block (big-endian words) into `st`'s running
+// hash words. Only touches st.*.h0..h7 -- never reads/writes
+// st.*.block/buflen/total, so it is safe to call on a throwaway copy of the
+// hash words (see sha256_digest) without disturbing the real context.
+fn h256_compress(st: *Sha256Ctx, block: []u8) void {
+    let w_raw: *i8 = _zag_malloc(64 * 8);
+    let w: *i64 = w_raw as *i64;
+
+    let t: i32 = 0;
+    while (t < 16) {
+        let base: i32 = t * 4;
+        w[t] = (((block[base] as i64) & 255) << 24)
+             | (((block[base + 1] as i64) & 255) << 16)
+             | (((block[base + 2] as i64) & 255) << 8)
+             | ((block[base + 3] as i64) & 255);
+        t = t + 1;
+    }
+    while (t < 64) {
+        let w15: i64 = w[t - 15];
+        let w2: i64 = w[t - 2];
+        let s0: i64 = (h256_rotr(w15, 7) ^ h256_rotr(w15, 18) ^ (w15 >> 3)) & 4294967295;
+        let s1: i64 = (h256_rotr(w2, 17) ^ h256_rotr(w2, 19) ^ (w2 >> 10)) & 4294967295;
+        w[t] = (w[t - 16] + s0 + w[t - 7] + s1) & 4294967295;
+        t = t + 1;
+    }
+
+    let k: *i64 = h256_k_table();
+
+    let a: i64 = st.*.h0;
+    let b: i64 = st.*.h1;
+    let c: i64 = st.*.h2;
+    let d: i64 = st.*.h3;
+    let e: i64 = st.*.h4;
+    let f: i64 = st.*.h5;
+    let g: i64 = st.*.h6;
+    let h: i64 = st.*.h7;
+
+    t = 0;
+    while (t < 64) {
+        let bigs1: i64 = (h256_rotr(e, 6) ^ h256_rotr(e, 11) ^ h256_rotr(e, 25)) & 4294967295;
+        let ch: i64 = ((e & f) ^ ((e ^ 4294967295) & g)) & 4294967295;
+        let temp1: i64 = (h + bigs1 + ch + k[t] + w[t]) & 4294967295;
+        let bigs0: i64 = (h256_rotr(a, 2) ^ h256_rotr(a, 13) ^ h256_rotr(a, 22)) & 4294967295;
+        let maj: i64 = ((a & b) ^ (a & c) ^ (b & c)) & 4294967295;
+        let temp2: i64 = (bigs0 + maj) & 4294967295;
+        h = g;
+        g = f;
+        f = e;
+        e = (d + temp1) & 4294967295;
+        d = c;
+        c = b;
+        b = a;
+        a = (temp1 + temp2) & 4294967295;
+        t = t + 1;
+    }
+
+    st.*.h0 = (st.*.h0 + a) & 4294967295;
+    st.*.h1 = (st.*.h1 + b) & 4294967295;
+    st.*.h2 = (st.*.h2 + c) & 4294967295;
+    st.*.h3 = (st.*.h3 + d) & 4294967295;
+    st.*.h4 = (st.*.h4 + e) & 4294967295;
+    st.*.h5 = (st.*.h5 + f) & 4294967295;
+    st.*.h6 = (st.*.h6 + g) & 4294967295;
+    st.*.h7 = (st.*.h7 + h) & 4294967295;
+
+    _zag_free(w_raw);
+    _zag_free(k as *i8);
+}
+
+// Write one 32-bit word big-endian into out[off..off+4].
+fn h256_put_be32(out: *u8, off: i32, v: i64) void {
+    out[off] = ((v >> 24) & 255) as u8;
+    out[off + 1] = ((v >> 16) & 255) as u8;
+    out[off + 2] = ((v >> 8) & 255) as u8;
+    out[off + 3] = (v & 255) as u8;
+}
+
+// New, empty SHA-256 context with the FIPS 180-4 initial hash values.
+fn sha256_new() Sha256Ctx {
+    let braw: *i8 = _zag_malloc(64);
+    return Sha256Ctx{
+        .h0 = 1779033703,
+        .h1 = 3144134277,
+        .h2 = 1013904242,
+        .h3 = 2773480762,
+        .h4 = 1359893119,
+        .h5 = 2600822924,
+        .h6 = 528734635,
+        .h7 = 1541459225,
+        .block = braw as *u8,
+        .buflen = 0,
+        .total = 0,
+    };
+}
+
+// Feed more message bytes into `ctx`. May be called any number of times
+// with arbitrary chunk sizes (including zero-length or non-block-aligned).
+fn sha256_update(ctx: *Sha256Ctx, data: []u8) void {
+    let i: i32 = 0;
+    while (i < data.len) {
+        let bl: i32 = ctx.*.buflen;
+        ctx.*.block[bl] = data[i];
+        bl = bl + 1;
+        if (bl == 64) {
+            h256_compress(ctx, ctx.*.block[0..64]);
+            bl = 0;
+        }
+        ctx.*.buflen = bl;
+        i = i + 1;
+    }
+    ctx.*.total = ctx.*.total + (data.len as i64);
+}
+
+// Digest of everything fed to `ctx` so far. Does NOT mutate `ctx`: the
+// running hash words are copied into a scratch context, padding is applied
+// to a freshly malloc'd buffer, and only the scratch copy is finalized.
+// `ctx` may keep being fed via sha256_update after this call, and
+// sha256_digest may be called again (or repeatedly) to observe the
+// transcript hash at any point -- required for the TLS 1.3 transcript hash.
+fn sha256_digest(ctx: *Sha256Ctx) []u8 {
+    let buflen: i32 = ctx.*.buflen;
+    let total: i64 = ctx.*.total;
+
+    let tmp: Sha256Ctx = Sha256Ctx{
+        .h0 = ctx.*.h0,
+        .h1 = ctx.*.h1,
+        .h2 = ctx.*.h2,
+        .h3 = ctx.*.h3,
+        .h4 = ctx.*.h4,
+        .h5 = ctx.*.h5,
+        .h6 = ctx.*.h6,
+        .h7 = ctx.*.h7,
+        .block = null as *u8,   // unused by h256_compress -- never dereferenced
+        .buflen = 0,
+        .total = 0,
+    };
+
+    // Pad only the buffered tail: everything before it is already folded
+    // into tmp.h0..h7 via prior compress() calls in sha256_update.
+    let padded_len: i32 = buflen + 1 + 8;
+    let rem: i32 = padded_len % 64;
+    if (rem != 0) { padded_len = padded_len + (64 - rem); }
+
+    let padded_raw: *i8 = _zag_malloc(padded_len);
+    let padded: *u8 = padded_raw as *u8;
+    let i: i32 = 0;
+    while (i < buflen) {
+        padded[i] = ctx.*.block[i];
+        i = i + 1;
+    }
+    padded[buflen] = 128;   // 0x80
+    i = buflen + 1;
+    while (i < padded_len - 8) {
+        padded[i] = 0;
+        i = i + 1;
+    }
+    let bitlen: i64 = total * 8;
+    let j: i32 = 0;
+    while (j < 8) {
+        padded[padded_len - 1 - j] = ((bitlen >> (j * 8)) & 255) as u8;
+        j = j + 1;
+    }
+
+    let off: i32 = 0;
+    while (off < padded_len) {
+        h256_compress(&tmp, padded[off..off + 64]);
+        off = off + 64;
+    }
+    _zag_free(padded_raw);
+
+    let out_raw: *i8 = _zag_malloc(32);
+    let out: *u8 = out_raw as *u8;
+    h256_put_be32(out, 0, tmp.h0);
+    h256_put_be32(out, 4, tmp.h1);
+    h256_put_be32(out, 8, tmp.h2);
+    h256_put_be32(out, 12, tmp.h3);
+    h256_put_be32(out, 16, tmp.h4);
+    h256_put_be32(out, 20, tmp.h5);
+    h256_put_be32(out, 24, tmp.h6);
+    h256_put_be32(out, 28, tmp.h7);
+    return out[0..32];
+}
+
+// One-shot SHA-256 digest of `msg`: 32 malloc'd bytes. Built on top of the
+// incremental API so both paths share one code path (and one set of bugs,
+// if any -- kept to zero via the RFC test vectors in probe/hashtest.zag).
+fn sha256(msg: []u8) []u8 {
+    let ctx: Sha256Ctx = sha256_new();
+    sha256_update(&ctx, msg);
+    let out: []u8 = sha256_digest(&ctx);
+    _zag_free(ctx.block as *i8);
+    return out;
+}
+
+// ── HMAC-SHA256 (RFC 2104 / FIPS 198-1) ──────────────────────────────────────
+
+// HMAC-SHA256(key, msg): 32 malloc'd bytes. Block size 64; keys longer than
+// the block size are first hashed down to 32 bytes; ipad = 0x36, opad = 0x5c.
+fn hmac_sha256(key: []u8, msg: []u8) []u8 {
+    let block_size: i32 = 64;
+
+    let k0_raw: *i8 = _zag_malloc(block_size);
+    let k0: *u8 = k0_raw as *u8;
+    let i: i32 = 0;
+    if (key.len > block_size) {
+        let hk: []u8 = sha256(key);
+        while (i < hk.len) {
+            k0[i] = hk[i];
+            i = i + 1;
+        }
+    } else {
+        while (i < key.len) {
+            k0[i] = key[i];
+            i = i + 1;
+        }
+    }
+    while (i < block_size) {
+        k0[i] = 0;
+        i = i + 1;
+    }
+
+    let ipad_raw: *i8 = _zag_malloc(block_size + msg.len);
+    let ipad: *u8 = ipad_raw as *u8;
+    i = 0;
+    while (i < block_size) {
+        ipad[i] = (((k0[i] as i64) ^ 54) & 255) as u8;   // 0x36
+        i = i + 1;
+    }
+    let j: i32 = 0;
+    while (j < msg.len) {
+        ipad[block_size + j] = msg[j];
+        j = j + 1;
+    }
+    let inner: []u8 = sha256(ipad[0..block_size + msg.len]);
+    _zag_free(ipad_raw);
+
+    let opad_raw: *i8 = _zag_malloc(block_size + inner.len);
+    let opad: *u8 = opad_raw as *u8;
+    i = 0;
+    while (i < block_size) {
+        opad[i] = (((k0[i] as i64) ^ 92) & 255) as u8;   // 0x5c
+        i = i + 1;
+    }
+    j = 0;
+    while (j < inner.len) {
+        opad[block_size + j] = inner[j];
+        j = j + 1;
+    }
+    let outer: []u8 = sha256(opad[0..block_size + inner.len]);
+    _zag_free(opad_raw);
+    _zag_free(k0_raw);
+
+    return outer;
+}
+
+// ── HKDF-SHA256 (RFC 5869) ────────────────────────────────────────────────────
+
+// HKDF-Extract(salt, ikm) = HMAC-SHA256(salt, ikm); an empty salt is
+// replaced with 32 zero bytes as the HMAC key, per RFC 5869 section 2.2.
+fn hkdf_extract(salt: []u8, ikm: []u8) []u8 {
+    if (salt.len == 0) {
+        let zraw: *i8 = _zag_malloc(32);
+        let z: *u8 = zraw as *u8;
+        let i: i32 = 0;
+        while (i < 32) {
+            z[i] = 0;
+            i = i + 1;
+        }
+        let result: []u8 = hmac_sha256(z[0..32], ikm);
+        _zag_free(zraw);
+        return result;
+    }
+    return hmac_sha256(salt, ikm);
+}
+
+// HKDF-Expand(prk, info, length): T(0) = "", T(i) = HMAC(prk, T(i-1) || info
+// || byte(i)) with a single-byte big-endian counter starting at 1; output is
+// the first `length` bytes of T(1) || T(2) || ...
+fn hkdf_expand(prk: []u8, info: []u8, length: i32) []u8 {
+    let out_raw: *i8 = _zag_malloc(length);
+    let out: *u8 = out_raw as *u8;
+
+    let produced: i32 = 0;
+    let counter: i32 = 1;
+    let prev: []u8 = "";
+    let prev_len: i32 = 0;
+
+    while (produced < length) {
+        let input_len: i32 = prev_len + info.len + 1;
+        let input_raw: *i8 = _zag_malloc(input_len);
+        let input: *u8 = input_raw as *u8;
+        let idx: i32 = 0;
+        let a: i32 = 0;
+        while (a < prev_len) {
+            input[idx] = prev[a];
+            idx = idx + 1;
+            a = a + 1;
+        }
+        a = 0;
+        while (a < info.len) {
+            input[idx] = info[a];
+            idx = idx + 1;
+            a = a + 1;
+        }
+        input[idx] = (counter & 255) as u8;
+
+        let t: []u8 = hmac_sha256(prk, input[0..input_len]);
+        _zag_free(input_raw);
+
+        let take: i32 = t.len;
+        if (length - produced < take) { take = length - produced; }
+        let c: i32 = 0;
+        while (c < take) {
+            out[produced + c] = t[c];
+            c = c + 1;
+        }
+        produced = produced + take;
+
+        prev = t;
+        prev_len = t.len;
+        counter = counter + 1;
+    }
+
+    return out[0..length];
+}

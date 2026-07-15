@@ -1,0 +1,38 @@
+@import("../zagstd/rt.zag")
+@import("../zagstd/list.zag") as list
+
+struct Sess {
+    id: i32,
+    title: []u8,
+}
+
+fn main() i32 {
+    let s: []u8 = "ABC";
+    let ch: i32 = s[0] as i32;
+    _zag_println(_zag_i64_to_str(ch as i64));
+
+    let xs: list.ArrayList[Sess] = list.make[Sess](2);
+    list.push[Sess](&xs, Sess{ .id = 1, .title = "one" });
+    list.push[Sess](&xs, Sess{ .id = 2, .title = "two" });
+    let s1: Sess = list.get[Sess](xs, 1);
+    _zag_println(s1.title);
+
+    let x: i32 = 7;
+    if (x < 5) { _zag_println("lt5"); }
+    else if (x < 10) { _zag_println("lt10"); }
+    else { _zag_println("big"); }
+
+    let buf: *i8 = _zag_malloc(16);
+    buf[0] = 72 as i8;
+    buf[1] = 73 as i8;
+    let sl: []u8 = buf[0..2];
+    _zag_println(sl);
+
+    let name: []u8 = "hello_world";
+    let part: []u8 = name[6..name.len];
+    _zag_println(part);
+
+    let joined: []u8 = _zag_str_concat("a=", _zag_i64_to_str(42));
+    _zag_println(joined);
+    return 0;
+}

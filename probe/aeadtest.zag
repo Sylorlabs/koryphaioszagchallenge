@@ -1,0 +1,157 @@
+// probe/aeadtest.zag — RFC 8439 test vectors for ChaCha20, Poly1305, and
+// AEAD_CHACHA20_POLY1305 (src/zrt/tls_aead.zag).
+//
+// Build/run:
+//   znc probe/aeadtest.zag -o build/aeadtest --run
+// Prints one PASS/FAIL line per check and exits non-zero on any failure.
+
+@import("../src/zrt/tls_aead.zag")
+
+struct TestCtx {
+    failures: i32,
+    total: i32,
+}
+
+fn t_ok(ctx: *TestCtx, cond: bool, name: []u8) void {
+    ctx.*.total = ctx.*.total + 1;
+    if (cond) {
+        _zag_print("PASS ");
+        _zag_println(name);
+    } else {
+        ctx.*.failures = ctx.*.failures + 1;
+        _zag_print("FAIL ");
+        _zag_println(name);
+    }
+}
+
+// Compare `got` (raw bytes) against `want_hex` (lowercase hex string) via
+// str_to_hex, printing both on mismatch.
+fn t_eq_hex(ctx: *TestCtx, got: []u8, want_hex: []u8, name: []u8) void {
+    ctx.*.total = ctx.*.total + 1;
+    let got_hex: []u8 = str_to_hex(got);
+    if (@strEq(got_hex, want_hex)) {
+        _zag_print("PASS ");
+        _zag_println(name);
+    } else {
+        ctx.*.failures = ctx.*.failures + 1;
+        _zag_print("FAIL ");
+        _zag_print(name);
+        _zag_print("  got=");
+        _zag_print(got_hex);
+        _zag_print("  want=");
+        _zag_println(want_hex);
+    }
+}
+
+// Parse a lowercase/uppercase hex string into a malloc'd byte buffer.
+fn hex_parse(s: []u8) []u8 {
+    let n: i32 = s.len / 2;
+    let alloc_len: i32 = n;
+    if (alloc_len < 1) { alloc_len = 1; }
+    let raw: *i8 = _zag_malloc(alloc_len);
+    let out: *u8 = raw as *u8;
+    let i: i32 = 0;
+    while (i < n) {
+        let hi: i32 = str_hex_val(s[i * 2]);
+        let lo: i32 = str_hex_val(s[i * 2 + 1]);
+        out[i] = ((hi << 4) | lo) as u8;
+        i = i + 1;
+    }
+    return out[0..n];
+}
+
+fn main() i32 {
+    let ctx: TestCtx = TestCtx{ .failures = 0, .total = 0 };
+    let pc: *TestCtx = &ctx;
+
+    // ── ChaCha20 (RFC 8439 §2.4.2) ──────────────────────────────────────────
+    _zag_println("-- chacha20 --");
+    let cc_key: []u8 = hex_parse("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    let cc_nonce: []u8 = hex_parse("000000000000004a00000000");
+    let cc_pt: []u8 = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+    let cc_want: []u8 = "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d";
+
+    t_ok(pc, cc_pt.len == 114, "chacha20 plaintext is 114 bytes");
+    let cc_ct: []u8 = chacha20_xor(cc_key, 1, cc_nonce, cc_pt);
+    t_ok(pc, cc_ct.len == cc_pt.len, "chacha20 ciphertext length matches plaintext");
+    t_eq_hex(pc, cc_ct, cc_want, "chacha20 RFC 8439 2.4.2 vector");
+
+    // ── Poly1305 (RFC 8439 §2.5.2) ──────────────────────────────────────────
+    _zag_println("-- poly1305 --");
+    let p_key: []u8 = hex_parse("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b");
+    let p_msg: []u8 = "Cryptographic Forum Research Group";
+    let p_want: []u8 = "a8061dc1305136c6c22b8baf0c0127a9";
+    let p_tag: []u8 = poly1305_mac(p_key, p_msg);
+    t_ok(pc, p_tag.len == 16, "poly1305 tag is 16 bytes");
+    t_eq_hex(pc, p_tag, p_want, "poly1305 RFC 8439 2.5.2 vector");
+
+    // ── AEAD_CHACHA20_POLY1305 seal (RFC 8439 §2.8.2) ───────────────────────
+    _zag_println("-- aead seal --");
+    let a_key: []u8 = hex_parse("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+    let a_nonce: []u8 = hex_parse("070000004041424344454647");
+    let a_aad: []u8 = hex_parse("50515253c0c1c2c3c4c5c6c7");
+    let a_pt: []u8 = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+    let a_ct_hex: []u8 = "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b6116";
+    let a_tag_hex: []u8 = "1ae10b594f09e26a7e902ecbd0600691";
+    let want_sealed_hex: []u8 = _zag_str_concat(a_ct_hex, a_tag_hex);
+
+    let sealed: []u8 = aead_seal(a_key, a_nonce, a_aad, a_pt);
+    t_ok(pc, sealed.len == a_pt.len + 16, "aead_seal output length is plaintext.len + 16");
+    t_eq_hex(pc, sealed, want_sealed_hex, "aead_seal RFC 8439 2.8.2 ciphertext||tag");
+
+    // ── AEAD_CHACHA20_POLY1305 open: round-trip ─────────────────────────────
+    _zag_println("-- aead open --");
+    let opened: ?[]u8 = aead_open(a_key, a_nonce, a_aad, sealed);
+    if (opened) |pt| {
+        t_ok(pc, @strEq(pt, a_pt), "aead_open recovers original plaintext");
+    } else {
+        t_ok(pc, false, "aead_open recovers original plaintext");
+    }
+
+    // Also verify against the RFC's own ciphertext||tag bytes directly
+    // (independent of our own aead_seal output).
+    let rfc_sealed: []u8 = hex_parse(want_sealed_hex);
+    let opened_rfc: ?[]u8 = aead_open(a_key, a_nonce, a_aad, rfc_sealed);
+    if (opened_rfc) |pt| {
+        t_ok(pc, @strEq(pt, a_pt), "aead_open on RFC vector bytes recovers plaintext");
+    } else {
+        t_ok(pc, false, "aead_open on RFC vector bytes recovers plaintext");
+    }
+
+    // ── AEAD_CHACHA20_POLY1305 open: tampered tag must fail ─────────────────
+    let tampered_raw: *i8 = _zag_malloc(sealed.len);
+    let tampered: *u8 = tampered_raw as *u8;
+    let i: i32 = 0;
+    while (i < sealed.len) { tampered[i] = sealed[i]; i = i + 1; }
+    tampered[sealed.len - 1] = tampered[sealed.len - 1] ^ (1 as u8);
+    let tampered_slice: []u8 = tampered[0..sealed.len];
+
+    let opened_bad: ?[]u8 = aead_open(a_key, a_nonce, a_aad, tampered_slice);
+    if (opened_bad) |_| {
+        t_ok(pc, false, "aead_open rejects a flipped tag byte");
+    } else {
+        t_ok(pc, true, "aead_open rejects a flipped tag byte");
+    }
+
+    // Too-short input must also fail cleanly (not crash).
+    let short_input: []u8 = "short";
+    let opened_short: ?[]u8 = aead_open(a_key, a_nonce, a_aad, short_input);
+    if (opened_short) |_| {
+        t_ok(pc, false, "aead_open rejects input shorter than 16 bytes");
+    } else {
+        t_ok(pc, true, "aead_open rejects input shorter than 16 bytes");
+    }
+
+    _zag_println("");
+    _zag_print(_zag_i64_to_str((ctx.total - ctx.failures) as i64));
+    _zag_print("/");
+    _zag_print(_zag_i64_to_str(ctx.total as i64));
+    _zag_println(" checks passed");
+    if (ctx.failures > 0) {
+        _zag_print("FAILURES: ");
+        _zag_println(_zag_i64_to_str(ctx.failures as i64));
+        return 1;
+    }
+    _zag_println("ALL PASS");
+    return 0;
+}

@@ -1,0 +1,20 @@
+@import("../src/backend/store.zag")
+
+fn main() i32 {
+    let st: *Store = store_open("/tmp/claude-1000/ztest-data");
+    let s: *Session = store_create_session(st, "Test Session", "/home/x");
+    _zag_println(s.*.id);
+    let m: []u8 = message_json(util_nanoid(12), s.*.id, "user", "hello \"world\"\nline2", "", "", 0, 0, 0, util_now_ms());
+    store_append_message(st, s.*.id, m);
+    store_append_message(st, s.*.id, message_json(util_nanoid(12), s.*.id, "assistant", "hi there", "llama3", "ollama", 10, 5, 120, util_now_ms()));
+    _zag_println(store_messages_raw(st, s.*.id));
+    _zag_println(sessions_json(st));
+
+    // reload from disk
+    let st2: *Store = store_open("/tmp/claude-1000/ztest-data");
+    _zag_println(_zag_i64_to_str(st2.*.sessions.len as i64));
+    let found: ?*Session = store_find(st2, s.*.id);
+    if (found) |f| { _zag_println(f.*.title); } else { _zag_println("NOT FOUND"); }
+    _zag_println(_zag_i64_to_str(util_now_ms()));
+    return 0;
+}

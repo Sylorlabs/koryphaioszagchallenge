@@ -1,0 +1,372 @@
+// src/zrt/zrt_test.zag — assertion suite for the zrt runtime modules:
+// str.zag, json.zag, sha1.zag, base64.zag.
+//
+// Build/run:
+//   znc src/zrt/zrt_test.zag -o build/zrt_test --run
+// Prints one PASS/FAIL line per check and exits non-zero on any failure.
+
+@import("json.zag")
+@import("sha1.zag")
+@import("base64.zag")
+
+struct TestCtx {
+    failures: i32,
+    total: i32,
+}
+
+fn t_ok(ctx: *TestCtx, cond: bool, name: []u8) void {
+    ctx.*.total = ctx.*.total + 1;
+    if (cond) {
+        _zag_print("PASS ");
+        _zag_println(name);
+    } else {
+        ctx.*.failures = ctx.*.failures + 1;
+        _zag_print("FAIL ");
+        _zag_println(name);
+    }
+}
+
+fn t_eq_str(ctx: *TestCtx, got: []u8, want: []u8, name: []u8) void {
+    ctx.*.total = ctx.*.total + 1;
+    if (@strEq(got, want)) {
+        _zag_print("PASS ");
+        _zag_println(name);
+    } else {
+        ctx.*.failures = ctx.*.failures + 1;
+        _zag_print("FAIL ");
+        _zag_print(name);
+        _zag_print("  got=");
+        _zag_print(got);
+        _zag_print("  want=");
+        _zag_println(want);
+    }
+}
+
+// `opt == null` on ?*T does not evaluate reliably (compiler quirk); the
+// if-capture form is the dependable way to test optionals.
+fn t_none(ctx: *TestCtx, opt: ?*JNode, name: []u8) void {
+    if (opt) |_| {
+        t_ok(ctx, false, name);
+    } else {
+        t_ok(ctx, true, name);
+    }
+}
+
+fn t_some(ctx: *TestCtx, opt: ?*JNode, name: []u8) void {
+    if (opt) |_| {
+        t_ok(ctx, true, name);
+    } else {
+        t_ok(ctx, false, name);
+    }
+}
+
+fn t_eq_int(ctx: *TestCtx, got: i64, want: i64, name: []u8) void {
+    ctx.*.total = ctx.*.total + 1;
+    if (got == want) {
+        _zag_print("PASS ");
+        _zag_println(name);
+    } else {
+        ctx.*.failures = ctx.*.failures + 1;
+        _zag_print("FAIL ");
+        _zag_print(name);
+        _zag_print("  got=");
+        _zag_print(_zag_i64_to_str(got));
+        _zag_print("  want=");
+        _zag_println(_zag_i64_to_str(want));
+    }
+}
+
+// ── str.zag ───────────────────────────────────────────────────────────────────
+
+fn test_str(ctx: *TestCtx) void {
+    _zag_println("-- str --");
+
+    t_ok(ctx, str_eq("abc", "abc"), "str_eq equal");
+    t_ok(ctx, str_eq("abc", "abd") == false, "str_eq unequal");
+    t_ok(ctx, str_eq("", ""), "str_eq empty");
+
+    t_ok(ctx, str_starts_with("hello world", "hello"), "starts_with hit");
+    t_ok(ctx, str_starts_with("hello", "hello world") == false, "starts_with too long");
+    t_ok(ctx, str_starts_with("hello", ""), "starts_with empty prefix");
+    t_ok(ctx, str_ends_with("hello world", "world"), "ends_with hit");
+    t_ok(ctx, str_ends_with("world", "hello world") == false, "ends_with too long");
+    t_ok(ctx, str_ends_with("x", "y") == false, "ends_with miss");
+
+    t_eq_int(ctx, str_index_of("hello world", "world") as i64, 6, "index_of hit");
+    t_eq_int(ctx, str_index_of("hello", "zzz") as i64, 0 - 1, "index_of miss");
+    t_eq_int(ctx, str_index_of("aaa", "aa") as i64, 0, "index_of overlapping");
+    t_eq_int(ctx, str_index_of_from("aaa", "aa", 1) as i64, 1, "index_of_from");
+    t_eq_int(ctx, str_index_of_from("abcabc", "abc", 1) as i64, 3, "index_of_from second hit");
+    t_eq_int(ctx, str_index_of("abc", "") as i64, 0, "index_of empty needle");
+
+    t_eq_str(ctx, str_trim("  \t hi there \r\n "), "hi there", "trim mixed ws");
+    t_eq_str(ctx, str_trim("x"), "x", "trim no-op");
+    t_eq_str(ctx, str_trim("   "), "", "trim all-ws");
+
+    t_eq_str(ctx, str_to_lower("HeLLo-123_Z"), "hello-123_z", "to_lower");
+
+    let sp1: SplitResult = str_split_first("key: value: more", ':' as u8);
+    t_ok(ctx, sp1.found, "split_first found flag");
+    t_eq_str(ctx, sp1.head, "key", "split_first head");
+    t_eq_str(ctx, sp1.tail, " value: more", "split_first tail");
+    let sp2: SplitResult = str_split_first("nodelim", ':' as u8);
+    t_ok(ctx, sp2.found == false, "split_first miss flag");
+    t_eq_str(ctx, sp2.head, "nodelim", "split_first miss head");
+    t_eq_str(ctx, sp2.tail, "", "split_first miss tail");
+
+    t_eq_str(ctx, str_from_i64(0 - 12345), "-12345", "i64->str negative");
+    t_eq_str(ctx, str_from_i64(0), "0", "i64->str zero");
+    t_eq_int(ctx, str_to_i64("98765"), 98765, "str->i64");
+    t_eq_int(ctx, str_to_i64("-42"), 0 - 42, "str->i64 negative");
+
+    t_ok(ctx, str_is_digit('7' as u8), "is_digit 7");
+    t_ok(ctx, str_is_digit('a' as u8) == false, "is_digit a");
+    t_eq_int(ctx, str_digit_val('9' as u8) as i64, 9, "digit_val");
+    t_eq_int(ctx, str_hex_val('f' as u8) as i64, 15, "hex_val f");
+    t_eq_int(ctx, str_hex_val('C' as u8) as i64, 12, "hex_val C");
+    t_eq_int(ctx, str_hex_val('g' as u8) as i64, 0 - 1, "hex_val invalid");
+
+    t_eq_str(ctx, str_to_hex("abc"), "616263", "to_hex");
+
+    t_eq_str(ctx, str_escape_json("a\"b\\c\nd\re\tf"), "a\\\"b\\\\c\\nd\\re\\tf", "escape_json specials");
+    let ctl: StrBuf = sb_make();
+    sb_ch(&ctl, 1);
+    sb_ch(&ctl, 31);
+    t_eq_str(ctx, str_escape_json(sb_slice(&ctl)), "\\u0001\\u001f", "escape_json control chars");
+
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "n=");
+    sb_int(&sb, 0 - 7);
+    sb_ch(&sb, ';' as u8);
+    t_eq_str(ctx, sb_slice(&sb), "n=-7;", "StrBuf app/int/ch");
+    t_eq_int(ctx, sb_len(&sb) as i64, 5, "StrBuf len");
+}
+
+// ── json.zag ──────────────────────────────────────────────────────────────────
+
+fn test_json(ctx: *TestCtx) void {
+    _zag_println("-- json --");
+
+    // scalars
+    let jn: ?*JNode = json_parse("null");
+    t_ok(ctx, json_is_null(jn), "parse null");
+    let jt: ?*JNode = json_parse("true");
+    t_ok(ctx, json_bool(jt), "parse true");
+    let jf: ?*JNode = json_parse("  false  ");
+    if (jf) |v| { t_ok(ctx, json_bool(jf) == false, "parse false w/ ws"); }
+    else { t_ok(ctx, false, "parse false w/ ws"); }
+    let ji: ?*JNode = json_parse("-1234567890123");
+    t_eq_int(ctx, json_int(ji), 0 - 1234567890123, "parse big negative int");
+    let jd: ?*JNode = json_parse("3.5");
+    t_ok(ctx, json_float(jd) == 3.5, "parse float 3.5");
+    let je: ?*JNode = json_parse("2.5e2");
+    t_ok(ctx, json_float(je) == 250.0, "parse exponent 2.5e2");
+    t_eq_int(ctx, json_int(je), 250, "float->int accessor");
+    let js: ?*JNode = json_parse("\"hi\"");
+    t_eq_str(ctx, json_str(js), "hi", "parse string");
+
+    // escapes
+    let jesc: ?*JNode = json_parse("\"a\\\"b\\\\c\\nd\\te\\r\\/f\\u0041\"");
+    t_eq_str(ctx, json_str(jesc), "a\"b\\c\nd\te\r/fA", "parse escapes + u0041");
+
+    // \uXXXX -> UTF-8: 0x2603 SNOWMAN = E2 98 83
+    let juni: ?*JNode = json_parse("\"\\u2603\"");
+    let uni: []u8 = json_str(juni);
+    t_eq_int(ctx, uni.len as i64, 3, "u2603 utf8 len");
+    t_ok(ctx, uni.len == 3 && (uni[0] as i32) == 226 && (uni[1] as i32) == 152 && (uni[2] as i32) == 131, "u2603 utf8 bytes");
+
+    // surrogate pair: U+1F600 = F0 9F 98 80
+    let jemo: ?*JNode = json_parse("\"\\ud83d\\ude00\"");
+    let emo: []u8 = json_str(jemo);
+    t_eq_int(ctx, emo.len as i64, 4, "surrogate pair utf8 len");
+    t_ok(ctx, emo.len == 4 && (emo[0] as i32) == 240 && (emo[1] as i32) == 159 && (emo[2] as i32) == 152 && (emo[3] as i32) == 128, "surrogate pair utf8 bytes");
+
+    // structured access
+    let src: []u8 = "{\"id\":42,\"name\":\"ko\\u0142o\",\"tags\":[\"a\",\"b\"],\"meta\":{\"ok\":true,\"n\":null,\"list\":[1,[2,3],{\"x\":-1}]},\"ts\":1751234567890}";
+    let root: ?*JNode = json_parse(src);
+    t_ok(ctx, json_is_null(root) == false, "parse nested doc");
+    t_eq_int(ctx, json_int(json_get(root, "id")), 42, "jget int");
+    t_eq_int(ctx, json_int(json_get(root, "ts")), 1751234567890, "jget timestamp i64");
+    t_eq_int(ctx, json_arr_len(json_get(root, "tags")) as i64, 2, "jarr_len");
+    t_eq_str(ctx, json_str(json_arr_at(json_get(root, "tags"), 1)), "b", "jarr_at");
+    t_ok(ctx, json_bool(json_get(json_get(root, "meta"), "ok")), "nested jget bool");
+    t_ok(ctx, json_is_null(json_get(json_get(root, "meta"), "n")), "nested null");
+    t_ok(ctx, json_is_null(json_get(root, "absent")), "missing key is null-ish");
+    let inner: ?*JNode = json_arr_at(json_get(json_get(root, "meta"), "list"), 2);
+    t_eq_int(ctx, json_int(json_get(inner, "x")), 0 - 1, "deep chain arr->obj->int");
+    t_eq_int(ctx, json_obj_len(root) as i64, 5, "obj_len");
+    t_eq_str(ctx, json_obj_key_at(root, 1), "name", "obj_key_at");
+
+    // round-trip 1: canonical compact form survives write(parse(x)) == x
+    let canon: []u8 = "{\"a\":1,\"b\":[true,false,null,\"s\"],\"c\":{\"d\":[1.5,-2],\"e\":\"q\\\"m\"},\"f\":\"tab\\there\"}";
+    let r1: ?*JNode = json_parse(canon);
+    if (r1) |v1| {
+        t_eq_str(ctx, json_write(v1), canon, "round-trip canonical");
+        // round-trip 2: parse(write(parse(x))) — writer output must re-parse
+        let w1: []u8 = json_write(v1);
+        let r2: ?*JNode = json_parse(w1);
+        if (r2) |v2| {
+            t_eq_str(ctx, json_write(v2), w1, "round-trip stable (2nd gen)");
+        } else {
+            t_ok(ctx, false, "round-trip stable (2nd gen)");
+        }
+    } else {
+        t_ok(ctx, false, "round-trip canonical");
+    }
+
+    // round-trip with unicode escapes: writer emits raw UTF-8, must re-parse
+    let uni_src: []u8 = "{\"s\":\"\\u2603\\ud83d\\ude00 plain\"}";
+    let ur1: ?*JNode = json_parse(uni_src);
+    let uw: []u8 = json_write(ur1.?);
+    let ur2: ?*JNode = json_parse(uw);
+    t_eq_str(ctx, json_str(json_get(ur2, "s")), json_str(json_get(ur1, "s")), "unicode round-trip value");
+
+    // number raw-text preservation
+    let nr: ?*JNode = json_parse("[1.50, 1e3, -0.25]");
+    t_eq_str(ctx, json_write(nr.?), "[1.50,1e3,-0.25]", "number raw text preserved");
+    t_ok(ctx, json_float(json_arr_at(nr, 1)) == 1000.0, "1e3 float value");
+    t_ok(ctx, json_float(json_arr_at(nr, 2)) == 0.0 - 0.25, "-0.25 float value");
+
+    // empty containers
+    let ec: ?*JNode = json_parse("{\"a\":[],\"b\":{}}");
+    t_eq_str(ctx, json_write(ec.?), "{\"a\":[],\"b\":{}}", "empty containers round-trip");
+
+    // programmatic construction + writer escaping
+    let items: ArrayList[*JNode] = make[*JNode](2);
+    push[*JNode](&items, new(JNode{ .str = "he said \"hi\"\n" }));
+    push[*JNode](&items, new(JNode{ .num = JNum{ .raw = "", .has_raw = false, .f = 0.0, .i = 77, .is_int = true } }));
+    let entries: ArrayList[JEntry] = make[JEntry](2);
+    push[JEntry](&entries, JEntry{ .key = "msg", .val = get[*JNode](items, 0) });
+    push[JEntry](&entries, JEntry{ .key = "n", .val = get[*JNode](items, 1) });
+    let built: *JNode = new(JNode{ .obj = entries });
+    t_eq_str(ctx, json_write(built), "{\"msg\":\"he said \\\"hi\\\"\\n\",\"n\":77}", "built node writes escaped");
+
+    // malformed inputs must return null
+    t_none(ctx, json_parse("{\"a\":}"), "reject missing value");
+    t_none(ctx, json_parse("[1,2"), "reject unclosed array");
+    t_none(ctx, json_parse("\"unterminated"), "reject unterminated string");
+    t_none(ctx, json_parse("{\"a\":1} extra"), "reject trailing garbage");
+    t_none(ctx, json_parse("tru"), "reject bad keyword");
+    t_none(ctx, json_parse(""), "reject empty input");
+    t_none(ctx, json_parse("[1,]"), "reject trailing comma");
+
+    // real-world-ish payload (chat message event)
+    let real: []u8 = "{\"type\":\"message\",\"id\":\"msg_01\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hello \\u2014 world\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":25},\"stop_reason\":null,\"temperature\":0.7}";
+    let rr: ?*JNode = json_parse(real);
+    t_some(ctx, rr, "real-world payload parses");
+    t_eq_str(ctx, json_str(json_get(rr, "type")), "message", "real-world type field");
+    t_eq_int(ctx, json_int(json_get(json_get(rr, "usage"), "output_tokens")), 25, "real-world nested int");
+    let content0: ?*JNode = json_arr_at(json_get(rr, "content"), 0);
+    t_eq_str(ctx, json_str(json_get(content0, "type")), "text", "real-world arr obj field");
+    let rw: []u8 = json_write(rr.?);
+    let rr2: ?*JNode = json_parse(rw);
+    t_some(ctx, rr2, "real-world re-parses after write");
+    t_eq_str(ctx, json_write(rr2.?), rw, "real-world write stable");
+}
+
+// ── sha1.zag ──────────────────────────────────────────────────────────────────
+
+fn test_sha1(ctx: *TestCtx) void {
+    _zag_println("-- sha1 --");
+
+    t_eq_str(ctx, sha1_hex("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1 abc");
+    t_eq_str(ctx, sha1_hex(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1 empty");
+    t_eq_str(ctx, sha1_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+             "84983e441c3bd26ebaae4aa1f95129e5e54670f1", "sha1 rfc3174 tv2");
+    // 55/56/64-byte messages cross the padding block boundary
+    t_eq_str(ctx, sha1_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+             "c1c8bbdc22796e28c0e15163d20899b65621d65a", "sha1 55 a's");
+    t_eq_str(ctx, sha1_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+             "c2db330f6083854c99d4b5bfb6e8f29f201be699", "sha1 56 a's");
+    t_eq_str(ctx, sha1_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+             "0098ba824b5c16427bd7a1122a5a442a25ec644d", "sha1 64 a's");
+
+    let d: []u8 = sha1("abc");
+    t_eq_int(ctx, d.len as i64, 20, "sha1 digest length");
+    t_eq_int(ctx, (d[0] as i64) & 255, 169, "sha1 first byte 0xa9");
+}
+
+// ── base64.zag ────────────────────────────────────────────────────────────────
+
+fn test_base64(ctx: *TestCtx) void {
+    _zag_println("-- base64 --");
+
+    // RFC 4648 vectors
+    t_eq_str(ctx, b64_encode(""), "", "b64 encode empty");
+    t_eq_str(ctx, b64_encode("f"), "Zg==", "b64 encode f");
+    t_eq_str(ctx, b64_encode("fo"), "Zm8=", "b64 encode fo");
+    t_eq_str(ctx, b64_encode("foo"), "Zm9v", "b64 encode foo");
+    t_eq_str(ctx, b64_encode("foob"), "Zm9vYg==", "b64 encode foob");
+    t_eq_str(ctx, b64_encode("fooba"), "Zm9vYmE=", "b64 encode fooba");
+    t_eq_str(ctx, b64_encode("foobar"), "Zm9vYmFy", "b64 encode foobar");
+
+    t_eq_str(ctx, b64_decode(""), "", "b64 decode empty");
+    t_eq_str(ctx, b64_decode("Zg=="), "f", "b64 decode Zg==");
+    t_eq_str(ctx, b64_decode("Zm8="), "fo", "b64 decode Zm8=");
+    t_eq_str(ctx, b64_decode("Zm9v"), "foo", "b64 decode Zm9v");
+    t_eq_str(ctx, b64_decode("Zm9vYmFy"), "foobar", "b64 decode foobar");
+    t_eq_str(ctx, b64_decode("Zm9v\r\nYmFy"), "foobar", "b64 decode ignores ws");
+    t_eq_str(ctx, b64_decode("!!!!"), "", "b64 decode invalid -> empty");
+
+    // binary round-trip incl. high bytes and the +/ alphabet corners
+    let bin: StrBuf = sb_make();
+    let i: i32 = 0;
+    while (i < 256) {
+        sb_ch(&bin, i as u8);
+        i = i + 1;
+    }
+    let all: []u8 = sb_slice(&bin);
+    let enc: []u8 = b64_encode(all);
+    let dec: []u8 = b64_decode(enc);
+    t_eq_int(ctx, dec.len as i64, 256, "b64 0..255 round-trip len");
+    let same: bool = true;
+    i = 0;
+    while (i < 256) {
+        if ((dec[i] as i32) != ((all[i]) as i32)) { same = false; }
+        i = i + 1;
+    }
+    t_ok(ctx, same, "b64 0..255 round-trip bytes");
+    // 0xFB 0xF0 => "+/A=" exercises chars 62/63
+    let hb: StrBuf = sb_make();
+    sb_ch(&hb, 251);
+    sb_ch(&hb, 240);
+    t_eq_str(ctx, b64_encode(sb_slice(&hb)), "+/A=", "b64 encode +/ corner");
+}
+
+// ── RFC 6455 WebSocket accept key ─────────────────────────────────────────────
+
+fn test_ws_accept(ctx: *TestCtx) void {
+    _zag_println("-- ws accept-key --");
+
+    let key: []u8 = "dGhlIHNhbXBsZSBub25jZQ==";
+    let magic: []u8 = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    let joined: []u8 = _zag_str_concat(key, magic);
+    let accept: []u8 = b64_encode(sha1(joined));
+    t_eq_str(ctx, accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC6455 accept key");
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+fn main() i32 {
+    let ctx: TestCtx = TestCtx{ .failures = 0, .total = 0 };
+    let pc: *TestCtx = &ctx;
+
+    test_str(pc);
+    test_json(pc);
+    test_sha1(pc);
+    test_base64(pc);
+    test_ws_accept(pc);
+
+    _zag_println("");
+    _zag_print(_zag_i64_to_str((ctx.total - ctx.failures) as i64));
+    _zag_print("/");
+    _zag_print(_zag_i64_to_str(ctx.total as i64));
+    _zag_println(" checks passed");
+    if (ctx.failures > 0) {
+        _zag_print("FAILURES: ");
+        _zag_println(_zag_i64_to_str(ctx.failures as i64));
+        return 1;
+    }
+    _zag_println("ALL PASS");
+    return 0;
+}

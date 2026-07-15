@@ -1,0 +1,60 @@
+// zrt/bytes.zag — raw byte-buffer helpers for syscall structures.
+//
+// Zag has no pointer arithmetic; *i8 indexing (p[i]) is the access primitive.
+// Byte reads come back as i8 — mask with & 255 to get the unsigned value.
+
+@import("../../zagstd/rt.zag")
+
+fn b_at(p: *i8, off: i32) i64 {
+    return (p[off] as i64) & 255;
+}
+
+fn b_set(p: *i8, off: i32, v: i64) void {
+    p[off] = (v & 255) as i8;
+}
+
+fn wr_u16le(p: *i8, off: i32, v: i64) void {
+    b_set(p, off, v & 255);
+    b_set(p, off + 1, (v >> 8) & 255);
+}
+
+fn wr_u16be(p: *i8, off: i32, v: i64) void {
+    b_set(p, off, (v >> 8) & 255);
+    b_set(p, off + 1, v & 255);
+}
+
+fn wr_u32le(p: *i8, off: i32, v: i64) void {
+    b_set(p, off, v & 255);
+    b_set(p, off + 1, (v >> 8) & 255);
+    b_set(p, off + 2, (v >> 16) & 255);
+    b_set(p, off + 3, (v >> 24) & 255);
+}
+
+fn wr_u64le(p: *i8, off: i32, v: i64) void {
+    wr_u32le(p, off, v & 4294967295);
+    wr_u32le(p, off + 4, (v >> 32) & 4294967295);
+}
+
+fn rd_u16le(p: *i8, off: i32) i64 {
+    return b_at(p, off) | (b_at(p, off + 1) << 8);
+}
+
+fn rd_u16be(p: *i8, off: i32) i64 {
+    return (b_at(p, off) << 8) | b_at(p, off + 1);
+}
+
+fn rd_u32le(p: *i8, off: i32) i64 {
+    return b_at(p, off) | (b_at(p, off + 1) << 8) | (b_at(p, off + 2) << 16) | (b_at(p, off + 3) << 24);
+}
+
+fn rd_u64le(p: *i8, off: i32) i64 {
+    return rd_u32le(p, off) | (rd_u32le(p, off + 4) << 32);
+}
+
+fn b_zero(p: *i8, n: i32) void {
+    let i: i32 = 0;
+    while (i < n) {
+        p[i] = 0 as i8;
+        i = i + 1;
+    }
+}

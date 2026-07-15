@@ -1,0 +1,91 @@
+// main.zag — Koryphaios, rewritten in Zag.
+//
+// One static binary: HTTP + WebSocket server over raw syscalls, JSON store,
+// provider registry, and the Kory orchestration loop. Serves the hand-built
+// frontend from frontend/public.
+//
+// Build:  znc src/main.zag -o build/koryphaios
+// Run:    ./build/koryphaios          (port from KORYPHAIOS_PORT, default 3001)
+
+@import("backend/routes.zag")
+@import("backend/routes_git.zag")
+@import("backend/routes_memory.zag")
+@import("backend/routes_notes.zag")
+@import("backend/routes_extra.zag")
+@import("backend/routes_proc.zag")
+@import("backend/routes_mcp.zag")
+@import("backend/chat.zag")
+@import("backend/worker.zag")
+
+fn env_or(name: []u8, fallback: []u8) []u8 {
+    let v: []u8 = _zag_getenv(name);
+    if (v.len == 0) { return fallback; }
+    return v;
+}
+
+// basename of the current working directory = project name
+fn project_name_from_cwd() []u8 {
+    let cwd: []u8 = str_trim(util_exec_capture("pwd"));
+    if (cwd.len == 0) { return "Koryphaios"; }
+    let i: i32 = cwd.len - 1;
+    let last_slash: i32 = 0 - 1;
+    while (i >= 0 && last_slash < 0) {
+        if (cwd[i] == '/') { last_slash = i; }
+        i = i - 1;
+    }
+    if (last_slash < 0 || last_slash == cwd.len - 1) { return "Koryphaios"; }
+    return cwd[last_slash + 1..cwd.len];
+}
+
+fn write_active_port(app: *AppState, port: i64) void {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{ \"port\": ");
+    sb_int(&sb, port);
+    sb_app(&sb, ", \"host\": \"127.0.0.1\", \"url\": \"http://127.0.0.1:");
+    sb_int(&sb, port);
+    sb_app(&sb, "\", \"wsUrl\": \"ws://127.0.0.1:");
+    sb_int(&sb, port);
+    sb_app(&sb, "/ws\", \"timestamp\": ");
+    sb_int(&sb, util_now_ms());
+    sb_app(&sb, ", \"pid\": ");
+    sb_int(&sb, util_getpid());
+    sb_app(&sb, " }");
+    util_mkdir(_zag_str_concat(app.*.data_dir, "/.koryphaios"));
+    util_write_atomic(_zag_str_concat(app.*.data_dir, "/.koryphaios/.active-port.json"), sb_slice(&sb));
+}
+
+fn main() i32 {
+    let port: i64 = str_to_i64(env_or("KORYPHAIOS_PORT", "3001"));
+    if (port <= 0) { port = 3001; }
+    let data_dir: []u8 = env_or("KORYPHAIOS_DATA_DIR", "data");
+    let static_dir: []u8 = env_or("KORYPHAIOS_FRONTEND_DIST", "frontend/public");
+
+    let maybe_srv: ?*HttpServer = http_server_make(port);
+    if (maybe_srv) |srv| {
+        let app: *AppState = new(AppState{
+            .store = store_open(data_dir),
+            .providers = make[*Provider](8),
+            .runs = make[*ChatRun](4),
+            .procs = make[*Proc](4),
+            .boot_secret = str_to_hex(util_random_bytes(16)),
+            .data_dir = data_dir,
+            .static_dir = static_dir,
+            .project_name = project_name_from_cwd(),
+            .started_ms = util_now_ms(),
+            .version = "1.0.0",
+            .last_ping_ms = 0,
+        });
+        providers_init(app);
+        creds_load(app);
+        srv.*.app_data = app as i64;
+        write_active_port(app, port);
+
+        _zag_println(_zag_str_concat("koryphaios-zag listening on http://127.0.0.1:", _zag_i64_to_str(port)));
+        _zag_println(_zag_str_concat("  static: ", static_dir));
+        _zag_println(_zag_str_concat("  data:   ", data_dir));
+        http_run(srv);
+        return 0;
+    }
+    _zag_eprintln("fatal: could not bind port");
+    return 1;
+}

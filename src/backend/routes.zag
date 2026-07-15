@@ -1,0 +1,417 @@
+// backend/routes.zag — HTTP routing: the Koryphaios /api surface + static UI.
+
+@import("app.zag")
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+fn ok_data(data: []u8) []u8 {
+    return _zag_str_concat(_zag_str_concat("{\"ok\":true,\"data\":", data), "}");
+}
+
+fn err_body(msg: []u8) []u8 {
+    return _zag_str_concat(_zag_str_concat("{\"ok\":false,\"error\":\"", str_escape_json(msg)), "\"}");
+}
+
+// Path segment after prefix, stopping at the next '/'; "" when absent.
+fn path_param(path: []u8, prefix: []u8) []u8 {
+    if (!str_starts_with(path, prefix)) { return ""; }
+    let rest: []u8 = path[prefix.len..path.len];
+    let sp: SplitResult = str_split_first(rest, '/');
+    return sp.head;
+}
+
+// Remainder after "<prefix><param>/", e.g. cancel in /api/sessions/x/cancel.
+fn path_action(path: []u8, prefix: []u8) []u8 {
+    if (!str_starts_with(path, prefix)) { return ""; }
+    let rest: []u8 = path[prefix.len..path.len];
+    let sp: SplitResult = str_split_first(rest, '/');
+    if (!sp.found) { return ""; }
+    return sp.tail;
+}
+
+// ── route dispatch ────────────────────────────────────────────────────────────
+
+fn app_handle(srv: *HttpServer, conn: *Conn, req: *Request) void {
+    let app: *AppState = app_of(srv);
+
+    // WebSocket upgrade
+    if (str_eq(req.*.path, "/ws")) {
+        if (!ws_upgrade(srv, conn, req)) {
+            http_send_json(srv, conn, 401, err_body("Unauthorized WebSocket request"));
+            return;
+        }
+        // connect-time provider.status push (per protocol contract)
+        let payload: []u8 = _zag_str_concat(_zag_str_concat("{\"providers\":", providers_json(app)), "}");
+        ws_send_text(srv, conn, ws_envelope("provider.status", payload, "", ""));
+        return;
+    }
+
+    // MCP JSON-RPC endpoint (before the /api router)
+    if (str_eq(req.*.path, "/mcp")) {
+        if (routes_mcp(srv, conn, req, app)) { return; }
+        http_send_json(srv, conn, 404, err_body("Not Found"));
+        return;
+    }
+
+    if (str_starts_with(req.*.path, "/api/") || str_eq(req.*.path, "/api")) {
+        // CORS preflight
+        if (str_eq(req.*.method, "OPTIONS")) {
+            http_respond_full(srv, conn, 204, "", http_cors_headers(), "");
+            return;
+        }
+        routes_api(srv, conn, req, app);
+        return;
+    }
+
+    routes_static(srv, conn, req, app);
+}
+
+// ── /api router ───────────────────────────────────────────────────────────────
+
+fn routes_api(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) void {
+    let path: []u8 = req.*.path;
+    let method: []u8 = req.*.method;
+
+    // health — no auth
+    if (str_eq(path, "/api/health")) {
+        let sb: StrBuf = sb_make();
+        sb_app(&sb, "{\"ok\":true,\"data\":{\"version\":\"");
+        sb_app(&sb, app.*.version);
+        sb_app(&sb, "\",\"uptime\":");
+        sb_int(&sb, (_zag_clock_monotonic_ms() - srv.*.started_ms) / 1000);
+        sb_app(&sb, ",\"pid\":");
+        sb_int(&sb, util_getpid());
+        sb_app(&sb, ",\"compat\":{\"minFrontend\":\"1.0.0\",\"currentFrontend\":\"1.0.0\",\"bundleHash\":null,\"bundleHashEnforced\":false,\"serverStartedAt\":");
+        sb_int(&sb, app.*.started_ms);
+        sb_app(&sb, "}}}");
+        http_send_json(srv, conn, 200, sb_slice(&sb));
+        return;
+    }
+
+    // auth bootstrap — no bearer required
+    if (str_eq(path, "/api/auth/session") && str_eq(method, "POST")) {
+        let sid: []u8 = util_nanoid(12);
+        let sig: []u8 = auth_sig_for(app, sid);
+        let sb: StrBuf = sb_make();
+        sb_app(&sb, "{\"ok\":true,\"data\":{\"bearerToken\":\"Bearer ");
+        sb_app(&sb, sid);
+        sb_ch(&sb, ':' as u8);
+        sb_app(&sb, sig);
+        sb_app(&sb, "\",\"sessionId\":\"");
+        sb_app(&sb, sid);
+        sb_app(&sb, "\",\"signature\":\"");
+        sb_app(&sb, sig);
+        sb_app(&sb, "\",\"expiresAt\":");
+        sb_int(&sb, util_now_ms() + 86400000);
+        sb_app(&sb, "}}");
+        http_send_json(srv, conn, 200, sb_slice(&sb));
+        return;
+    }
+    if (str_eq(path, "/api/auth/me")) {
+        let authed: bool = auth_check(app, http_header_get(req, "authorization"));
+        if (authed) {
+            let sb: StrBuf = sb_make();
+            sb_app(&sb, "{\"ok\":true,\"data\":{\"user\":{\"id\":\"local-user\",\"username\":\"Local User\",\"isAdmin\":true,\"createdAt\":");
+            sb_int(&sb, app.*.started_ms);
+            sb_app(&sb, ",\"permissions\":[\"*\"]}}}");
+            http_send_json(srv, conn, 200, sb_slice(&sb));
+        } else {
+            http_send_json(srv, conn, 200, "{\"ok\":true,\"data\":{\"user\":null}}");
+        }
+        return;
+    }
+    if (str_eq(path, "/api/auth/session") && str_eq(method, "DELETE")) {
+        http_send_json(srv, conn, 200, "{\"ok\":true,\"message\":\"Session revoked\"}");
+        return;
+    }
+
+    // debug sink — keep the frontend error monitor happy
+    if (str_eq(path, "/api/debug/log-error")) {
+        http_send_json(srv, conn, 200, "{\"ok\":true}");
+        return;
+    }
+
+    // everything below requires auth
+    if (!auth_check(app, http_header_get(req, "authorization"))) {
+        http_send_json(srv, conn, 401, err_body("Unauthorized"));
+        return;
+    }
+
+    // project / workspace
+    if (str_eq(path, "/api/project")) {
+        let sb: StrBuf = sb_make();
+        sb_app(&sb, "{\"projectName\":\"");
+        sb_app(&sb, str_escape_json(app.*.project_name));
+        sb_app(&sb, "\"}");
+        http_send_json(srv, conn, 200, ok_data(sb_slice(&sb)));
+        return;
+    }
+    if (str_eq(path, "/api/workspace/home")) {
+        let home: []u8 = _zag_getenv("HOME");
+        http_send_json(srv, conn, 200, ok_data(_zag_str_concat(_zag_str_concat("\"", str_escape_json(home)), "\"")));
+        return;
+    }
+
+    // providers
+    if (str_eq(path, "/api/providers") || str_eq(path, "/api/providers/status")) {
+        if (str_eq(method, "GET")) {
+            http_send_json(srv, conn, 200, ok_data(providers_json(app)));
+            return;
+        }
+    }
+    // /api/providers/{available,detect,custom} are handled by routes_extra;
+    // let them fall through to the modular dispatch below.
+    if (str_starts_with(path, "/api/providers/")
+        && !str_eq(path, "/api/providers/available")
+        && !str_eq(path, "/api/providers/detect")
+        && !str_eq(path, "/api/providers/custom")) {
+        let name: []u8 = path_param(path, "/api/providers/");
+        if ((str_eq(method, "PUT") || str_eq(method, "POST")) && !str_eq(name, "status")) {
+            routes_provider_update(srv, conn, req, app, name);
+            return;
+        }
+        if (str_eq(method, "DELETE")) {
+            let maybe: ?*Provider = provider_find(app, name);
+            if (maybe) |p| {
+                p.*.api_key = "";
+                p.*.base_url = "";
+                p.*.authenticated = false;
+                creds_save(app);
+                ws_emit(srv, "provider.status", _zag_str_concat(_zag_str_concat("{\"providers\":", providers_json(app)), "}"), "", "");
+                http_send_json(srv, conn, 200, "{\"ok\":true}");
+            } else {
+                http_send_json(srv, conn, 200, err_body("Unknown provider"));
+            }
+            return;
+        }
+    }
+
+    // sessions
+    if (str_eq(path, "/api/sessions") && str_eq(method, "GET")) {
+        http_send_json(srv, conn, 200, ok_data(sessions_json(app.*.store)));
+        return;
+    }
+    if (str_eq(path, "/api/sessions") && str_eq(method, "POST")) {
+        let body: ?*JNode = json_parse(req.*.body);
+        let title: []u8 = json_str(json_get(body, "title"));
+        if (title.len == 0) { title = "New Session"; }
+        let wdir: []u8 = json_str(json_get(body, "workingDirectory"));
+        let s: *Session = store_create_session(app.*.store, title, wdir);
+        let sb: StrBuf = sb_make();
+        session_json(s, &sb);
+        let sjson: []u8 = sb_slice(&sb);
+        ws_emit(srv, "session.updated", _zag_str_concat(_zag_str_concat("{\"session\":", sjson), "}"), "", "");
+        http_send_json(srv, conn, 200, ok_data(sjson));
+        return;
+    }
+    if (str_starts_with(path, "/api/sessions/")) {
+        let sid: []u8 = path_param(path, "/api/sessions/");
+        let action: []u8 = path_action(path, "/api/sessions/");
+        let maybe: ?*Session = store_find(app.*.store, sid);
+        if (maybe) |s| {
+            if (action.len == 0) {
+                if (str_eq(method, "GET")) {
+                    let sb: StrBuf = sb_make();
+                    session_json(s, &sb);
+                    http_send_json(srv, conn, 200, ok_data(sb_slice(&sb)));
+                    return;
+                }
+                if (str_eq(method, "PATCH")) {
+                    let body: ?*JNode = json_parse(req.*.body);
+                    let title: []u8 = json_str(json_get(body, "title"));
+                    if (title.len > 0) { s.*.title = _zag_strdup(title); }
+                    store_touch(app.*.store, s);
+                    let sb: StrBuf = sb_make();
+                    session_json(s, &sb);
+                    let sjson: []u8 = sb_slice(&sb);
+                    ws_emit(srv, "session.updated", _zag_str_concat(_zag_str_concat("{\"session\":", sjson), "}"), "", "");
+                    http_send_json(srv, conn, 200, ok_data(sjson));
+                    return;
+                }
+                if (str_eq(method, "DELETE")) {
+                    store_delete_session(app.*.store, sid);
+                    http_send_json(srv, conn, 200, "{\"ok\":true}");
+                    return;
+                }
+            } else if (str_eq(action, "cancel") && str_eq(method, "POST")) {
+                chat_cancel_session(app, sid);
+                ws_emit(srv, "system.info", "{\"message\":\"Session cancelled\"}", sid, "");
+                http_send_json(srv, conn, 200, "{\"ok\":true,\"message\":\"Session cancelled\"}");
+                return;
+            } else if (str_eq(action, "context") && str_eq(method, "GET")) {
+                http_send_json(srv, conn, 200, _zag_str_concat(_zag_str_concat("{\"ok\":true,\"lastUsage\":null,\"data\":", archive_json(app, sid)), "}"));
+                return;
+            }
+        }
+        http_send_json(srv, conn, 404, err_body("Session not found"));
+        return;
+    }
+
+    // messages
+    if (str_eq(path, "/api/messages") && str_eq(method, "POST")) {
+        routes_chat_send(srv, conn, req, app);
+        return;
+    }
+    if (str_eq(path, "/api/messages/regenerate") && str_eq(method, "POST")) {
+        let body: ?*JNode = json_parse(req.*.body);
+        let sid: []u8 = json_str(json_get(body, "sessionId"));
+        let model: []u8 = json_str(json_get(body, "model"));
+        let reasoning: []u8 = json_str(json_get(body, "reasoningLevel"));
+        let maybe: ?*Session = store_find(app.*.store, sid);
+        if (maybe) |s| {
+            // re-run the last user prompt as a fresh assistant turn
+            let raw: []u8 = store_messages_raw(app.*.store, sid);
+            let root: ?*JNode = json_parse(raw);
+            let n: i32 = json_arr_len(root);
+            let last_user: []u8 = "";
+            let j: i32 = n - 1;
+            let go: bool = true;
+            while (j >= 0 && go) {
+                let m: ?*JNode = json_arr_at(root, j);
+                if (str_eq(json_str(json_get(m, "role")), "user")) {
+                    last_user = json_str(json_get(json_arr_at(json_get(m, "content"), 0), "text"));
+                    go = false;
+                }
+                j = j - 1;
+            }
+            if (last_user.len > 0) { chat_start(srv, app, s, last_user, model, reasoning); }
+            http_send_json(srv, conn, 200, "{\"ok\":true,\"data\":{\"groupId\":\"regen\",\"index\":1}}");
+        } else {
+            http_send_json(srv, conn, 404, err_body("Session not found"));
+        }
+        return;
+    }
+    if (str_starts_with(path, "/api/messages/") && str_eq(method, "GET")) {
+        let sid: []u8 = path_param(path, "/api/messages/");
+        let maybe: ?*Session = store_find(app.*.store, sid);
+        if (maybe) |s| {
+            let _u: i64 = s.*.version;
+            http_send_json(srv, conn, 200, ok_data(store_messages_raw(app.*.store, sid)));
+        } else {
+            http_send_json(srv, conn, 404, err_body("Session not found"));
+        }
+        return;
+    }
+
+    // ── modular route families (each returns true if it handled the path) ────
+    // Implemented in separate routes_*.zag files, dispatched here in order.
+    if (routes_git(srv, conn, req, app)) { return; }
+    if (routes_memory(srv, conn, req, app)) { return; }
+    if (routes_notes(srv, conn, req, app)) { return; }
+    if (routes_proc(srv, conn, req, app)) { return; }
+    if (routes_extra(srv, conn, req, app)) { return; }
+
+    http_send_json(srv, conn, 404, err_body("Not Found"));
+}
+
+// PUT /api/providers/:name — connect credentials.
+fn routes_provider_update(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState, name: []u8) void {
+    let maybe: ?*Provider = provider_find(app, name);
+    if (maybe) |p| {
+        let body: ?*JNode = json_parse(req.*.body);
+        let key: []u8 = json_str(json_get(body, "apiKey"));
+        let base: []u8 = json_str(json_get(body, "baseUrl"));
+        if (key.len > 0) { p.*.api_key = _zag_strdup(key); }
+        if (base.len > 0) { p.*.base_url = _zag_strdup(base); }
+        if (p.*.requires_base_url) {
+            p.*.authenticated = p.*.base_url.len > 0;
+        } else {
+            p.*.authenticated = p.*.api_key.len > 0;
+        }
+        creds_save(app);
+        ws_emit(srv, "provider.status", _zag_str_concat(_zag_str_concat("{\"providers\":", providers_json(app)), "}"), "", "");
+        http_send_json(srv, conn, 200, "{\"ok\":true}");
+    } else {
+        http_send_json(srv, conn, 200, err_body("Unknown provider"));
+    }
+}
+
+// POST /api/messages — persist user message, kick off orchestration, return.
+fn routes_chat_send(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) void {
+    let body: ?*JNode = json_parse(req.*.body);
+    let sid: []u8 = json_str(json_get(body, "sessionId"));
+    let content: []u8 = json_str(json_get(body, "content"));
+    let model: []u8 = json_str(json_get(body, "model"));
+    let reasoning: []u8 = json_str(json_get(body, "reasoningLevel"));
+    let maybe: ?*Session = store_find(app.*.store, sid);
+    if (maybe) |s| {
+        let now: i64 = util_now_ms();
+        let msg: []u8 = message_json(util_nanoid(12), sid, "user", content, "", "", 0, 0, 0, now);
+        store_append_message(app.*.store, sid, msg);
+        s.*.message_count = s.*.message_count + 1;
+        // first message titles the session (heuristic replacement for the LLM call)
+        if (s.*.message_count == 1 && str_eq(s.*.title, "New Session")) {
+            s.*.title = chat_title_from(content);
+        }
+        store_touch(app.*.store, s);
+        let sb: StrBuf = sb_make();
+        session_json(s, &sb);
+        ws_emit(srv, "session.updated", _zag_str_concat(_zag_str_concat("{\"session\":", sb_slice(&sb)), "}"), "", "");
+        chat_start(srv, app, s, content, model, reasoning);
+        http_send_json(srv, conn, 200, "{\"ok\":true,\"data\":{\"status\":\"processing\"}}");
+    } else {
+        http_send_json(srv, conn, 404, err_body("Session not found"));
+    }
+}
+
+// ── static files + SPA fallback ───────────────────────────────────────────────
+
+fn routes_static(srv: *HttpServer, conn: *Conn, req: *Request, app: *AppState) void {
+    if (!str_eq(req.*.method, "GET") && !str_eq(req.*.method, "HEAD")) {
+        http_send_text(srv, conn, 404, "Not Found");
+        return;
+    }
+    let path: []u8 = req.*.path;
+    // traversal guard
+    if (str_index_of(path, "..") >= 0) {
+        http_send_text(srv, conn, 403, "Forbidden");
+        return;
+    }
+    if (str_eq(path, "/") || path.len == 0) {
+        path = "/index.html";
+    }
+    let fs_path: []u8 = _zag_str_concat(app.*.static_dir, path);
+    if (http_send_file(srv, conn, fs_path)) { return; }
+    // SPA fallback
+    let index_path: []u8 = _zag_str_concat(app.*.static_dir, "/index.html");
+    if (http_send_file(srv, conn, index_path)) { return; }
+    http_send_text(srv, conn, 404, "Not Found");
+}
+
+// ── WebSocket client→server messages ─────────────────────────────────────────
+
+fn app_ws_frame(srv: *HttpServer, conn: *Conn, opcode: i32, payload: []u8) void {
+    if (opcode != 1) { return; }
+    let app: *AppState = app_of(srv);
+    let msg: ?*JNode = json_parse(payload);
+    let mtype: []u8 = json_str(json_get(msg, "type"));
+    if (str_eq(mtype, "subscribe_session")) {
+        let sid: []u8 = json_str(json_get(msg, "sessionId"));
+        if (sid.len > 0 && sid.len <= 64 && !conn_is_subscribed(conn, sid)) {
+            push[[]u8](&conn.*.ws_subs, _zag_strdup(sid));
+        }
+    } else if (str_eq(mtype, "user_input")) {
+        let sid: []u8 = json_str(json_get(msg, "sessionId"));
+        let answer: []u8 = json_str(json_get(msg, "selection"));
+        if (answer.len == 0) { answer = json_str(json_get(msg, "text")); }
+        if (sid.len > 0) { chat_answer_user(srv, app, sid, answer); }
+    } else if (str_eq(mtype, "ping")) {
+        ws_send_text(srv, conn, ws_envelope("pong", "{}", "", ""));
+    }
+    let _keep: *AppState = app;
+}
+
+fn app_conn_closed(srv: *HttpServer, conn: *Conn) void {
+    // When an outbound provider socket closes (EOF), finalize its run if the
+    // response ended without an explicit SSE [DONE] / chunked-0 terminator.
+    if (conn.*.kind == 2) {
+        let app: *AppState = app_of(srv);
+        let maybe: ?*ChatRun = chat_find_run_by_fd(app, conn.*.fd);
+        if (maybe) |run| {
+            if (run.*.state != 9) {
+                run.*.fd = 0 - 1;   // this conn is already closing
+                chat_stream_ended(srv, app, run);
+            }
+        }
+    }
+}

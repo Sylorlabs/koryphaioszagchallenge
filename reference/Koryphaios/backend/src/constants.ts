@@ -1,0 +1,425 @@
+// Backend Constants — Extract magic numbers and configuration defaults
+
+/** Application version (single source of truth) */
+export const VERSION = '1.0.0';
+
+/**
+ * Frontend/Backend compatibility contract.
+ *
+ * `minFrontend` is the oldest frontend build allowed to operate normally
+ * against this backend. Older frontends see the mismatch overlay and halt
+ * rather than running in a broken half-state. `currentFrontend` is the
+ * frontend build that shipped in lockstep with THIS backend build
+ * (informational only).
+ *
+ * Bump `minFrontend` whenever a backend change breaks the public /api or ws
+ * contract older frontends rely on. Bump `currentFrontend` whenever a new
+ * frontend ships alongside this backend.
+ */
+export const COMPAT = {
+  minFrontend: '1.0.0',
+  currentFrontend: '1.0.0',
+} as const;
+
+/**
+ * Session and Message Limits
+ */
+export const SESSION = {
+  /** Maximum length for session titles */
+  MAX_TITLE_LENGTH: 200,
+  /** Default title for new sessions */
+  DEFAULT_TITLE: 'New Session',
+  /** Characters to extract from first message for auto-title */
+  AUTO_TITLE_CHARS: 50,
+} as const;
+
+export const MESSAGE = {
+  /** Maximum content length per message (100KB) */
+  MAX_CONTENT_LENGTH: 100_000,
+  /** Maximum attachment size (future use) */
+  MAX_ATTACHMENT_SIZE: 10_000_000, // 10MB
+} as const;
+
+/**
+ * ID Generation
+ */
+export const ID = {
+  /** Length for session/message IDs */
+  SESSION_ID_LENGTH: 12,
+  /** Length for WebSocket client IDs */
+  WS_CLIENT_ID_LENGTH: 8,
+  /** Length for tool call IDs */
+  TOOL_CALL_ID_LENGTH: 12,
+  /** Length for agent IDs */
+  AGENT_ID_LENGTH: 16,
+} as const;
+
+/**
+ * Rate Limiting
+ */
+export const RATE_LIMIT = {
+  /** Requests per window (general API) */
+  MAX_REQUESTS: 120,
+  /** Time window in milliseconds (1 minute) */
+  WINDOW_MS: 60_000,
+  /** Auth endpoints (login, register, refresh) per IP per minute */
+  AUTH_PER_MINUTE: 15,
+  /** Credential-setting (PUT /api/providers) per IP per minute */
+  CREDENTIAL_PER_MINUTE: 20,
+} as const;
+
+/**
+ * Server Configuration Defaults
+ */
+export const SERVER = {
+  /** Default HTTP port - using port 3001 for unified desktop experience */
+  DEFAULT_PORT: 3001,
+  /** Default host (loopback for safer local defaults) */
+  DEFAULT_HOST: '127.0.0.1',
+  /** WebSocket path */
+  WS_PATH: '/ws',
+  /** SSE path */
+  SSE_PATH: '/api/events',
+} as const;
+
+/**
+ * Security
+ */
+export const SECURITY = {
+  /** Maximum API key length */
+  MAX_API_KEY_LENGTH: 500,
+  /** Maximum provider name length */
+  MAX_PROVIDER_NAME_LENGTH: 50,
+  /** Allowed CORS origins (add more via config.corsOrigins for other dev hosts/ports) */
+  ALLOWED_ORIGINS: [
+    'http://localhost:5173', // Vite dev default
+    'http://localhost:3000', // Bun dev server
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000',
+  ],
+} as const;
+
+/**
+ * Auth patterns (single source of truth for token format checks).
+ */
+export const AUTH = {
+  /** Claude subscription OAuth token from "claude setup-token" (sk-ant-oat01-...). */
+  CLAUDE_OAUTH_TOKEN_REGEX: /^sk-ant-oat\d{2}-/,
+} as const;
+
+/**
+ * File System
+ */
+export const FS = {
+  /** Default data directory name */
+  DEFAULT_DATA_DIR: '.koryphaios',
+  /** Sessions subdirectory */
+  SESSIONS_DIR: 'sessions',
+  /** Messages file suffix */
+  MESSAGES_FILE_SUFFIX: '.messages.json',
+  /** Session file suffix */
+  SESSION_FILE_SUFFIX: '.json',
+} as const;
+
+/**
+ * Agent Configuration
+ */
+export const AGENT = {
+  /** Default models per role if not configured */
+  DEFAULT_MANAGER_MODEL: 'claude-sonnet-4-6',
+  DEFAULT_CODER_MODEL: 'claude-sonnet-4-6',
+  DEFAULT_TASK_MODEL: 'gpt-5-mini',
+
+  /** Default token limits */
+  DEFAULT_MAX_TOKENS: 8192,
+  CODER_MAX_TOKENS: 16384,
+
+  /** Default reasoning level */
+  DEFAULT_REASONING_LEVEL: 'high' as const,
+
+  /** Fallback model chains (IDs must exist in MODEL_CATALOG). */
+  DEFAULT_FALLBACKS: {
+    'claude-sonnet-4-6': ['gpt-5.2-pro', 'gemini-3.1-pro'],
+    'gpt-5.2-pro': ['claude-sonnet-4-6', 'gemini-3.1-pro'],
+    'gpt-5-mini': ['gemini-3-flash', 'claude-haiku-4-5'],
+    'o4-mini': ['gpt-5-mini', 'gemini-3-flash'],
+  } as Record<string, string[]>,
+
+  /** Max time a single LLM stream can run before being aborted (prevents stuck requests) */
+  LLM_STREAM_TIMEOUT_MS: 600_000, // 10 minutes
+
+  /** Max total wall-clock time for processTask before hard abort (prevents indefinite hangs) */
+  PROCESS_TASK_TIMEOUT_MS: 1_800_000, // 30 minutes
+
+  /** Max time to wait for a single user input response before auto-resolving (prevents indefinite hangs) */
+  USER_INPUT_TIMEOUT_MS: 300_000, // 5 minutes
+} as const;
+
+/**
+ * Configuration File Paths (in order of precedence)
+ */
+export const CONFIG_PATHS = [
+  'koryphaios.json', // Project root
+  '.config/koryphaios/config.json', // User config (in home)
+  '.koryphaios.json', // User config (home root)
+] as const;
+
+/**
+ * Context Files (loaded into agent context)
+ */
+export const DEFAULT_CONTEXT_PATHS: string[] = [
+  '.koryphaios/rules/rules.md',
+  'CLAUDE.md',
+  'AGENTS.md',
+  '.opencode.json',
+  'CONVENTIONS.md',
+];
+
+/**
+ * Session Memory Configuration
+ * Persistent markdown files that survive compaction
+ */
+export const SESSION_MEMORY = {
+  /** Filename for session memory */
+  FILENAME: 'memory.md',
+  /** Default character limit for memory excerpts in prompts */
+  MAX_EXCERPT_LENGTH: 4000,
+  /** Sections that can be updated */
+  SECTIONS: {
+    PROJECT_CONTEXT: '🎯 Project Context',
+    KEY_LEARNINGS: '📚 Key Learnings & Insights',
+    TECHNICAL_DECISIONS: '🔧 Technical Decisions',
+    GOTCHAS: '⚠️ Gotchas & Edge Cases',
+    REFERENCES: '🔗 References',
+  } as const,
+};
+
+/**
+ * Logging
+ */
+export const LOG = {
+  /** Log level for production */
+  PROD_LEVEL: 'info' as const,
+  /** Log level for development */
+  DEV_LEVEL: 'debug' as const,
+  /** Enable pretty printing in dev */
+  PRETTY_PRINT_DEV: true,
+} as const;
+
+/**
+ * Provider Configuration
+ */
+export const PROVIDER = {
+  /** Environment variable prefix */
+  ENV_VAR_PREFIX: 'ANTHROPIC_API_KEY', // Example pattern
+
+  /** Expected environment variable names */
+  ENV_VARS: {
+    ANTHROPIC: 'ANTHROPIC_API_KEY',
+    OPENAI: 'OPENAI_API_KEY',
+    GEMINI: 'GEMINI_API_KEY',
+    GROQ: 'GROQ_API_KEY',
+    XAI: 'XAI_API_KEY',
+    AZURE: 'AZURE_OPENAI_API_KEY',
+    BEDROCK: 'AWS_ACCESS_KEY_ID', // Also needs AWS_SECRET_ACCESS_KEY
+    COPILOT: 'GITHUB_TOKEN',
+    OPENROUTER: 'OPENROUTER_API_KEY',
+    VERTEXAI: 'GOOGLE_VERTEX_AI_API_KEY',
+  } as const,
+} as const;
+
+/**
+ * Health Check
+ */
+export const HEALTH = {
+  /** Include detailed metrics */
+  INCLUDE_METRICS: true,
+  /** Response timeout (ms) */
+  TIMEOUT_MS: 5000,
+} as const;
+
+/**
+ * WebSocket
+ */
+export const WS = {
+  /** Heartbeat interval (future use) */
+  HEARTBEAT_INTERVAL_MS: 30_000,
+  /** Max message size */
+  MAX_MESSAGE_SIZE: 1_000_000, // 1MB
+  /** Reconnect delay (client-side, for reference) */
+  RECONNECT_DELAY_MS: 2000,
+} as const;
+
+/**
+ * Timeouts
+ */
+export const TIMEOUT = {
+  /** Tool execution timeout */
+  TOOL_EXECUTION_MS: 300_000, // 5 minutes
+  /** Agent response timeout */
+  AGENT_RESPONSE_MS: 600_000, // 10 minutes
+  /** Provider API timeout */
+  PROVIDER_API_MS: 120_000, // 2 minutes
+} as const;
+
+/**
+ * Workspace / Git Worktree Configuration
+ * Used by WorkspaceManager for parallel agent isolation
+ */
+export const WORKSPACE = {
+  /** Default max concurrent worktrees */
+  DEFAULT_WORKTREE_LIMIT: 4,
+  /** Default worktree directory (relative to repo root) */
+  DEFAULT_WORKTREE_DIR: '.trees',
+  /** Default: don't copy .env files to worktrees (security) */
+  DEFAULT_COPY_ENV_FILES: false,
+  /** Estimated RAM usage per worktree in MB (for guidance) */
+  RAM_PER_WORKTREE_MB: 300,
+} as const;
+
+/**
+ * Worker Domain Configuration
+ */
+export const DOMAIN = {
+  KEYWORDS: {
+    frontend: [
+      'skia',
+      'flutter',
+      'ui',
+      'widget',
+      'button',
+      'layout',
+      'css',
+      'style',
+      'animation',
+      'render',
+      'frontend',
+      'component',
+      'svelte',
+      'react',
+      'view',
+      'canvas',
+      'draw',
+      'paint',
+      'theme',
+      'color',
+      'font',
+      'icon',
+      'design',
+      'responsive',
+      'mobile',
+      'dark mode',
+      'light mode',
+      'sidebar',
+      'modal',
+    ],
+    ui: [
+      'skia',
+      'flutter',
+      'ui',
+      'widget',
+      'button',
+      'layout',
+      'css',
+      'style',
+      'animation',
+      'render',
+      'frontend',
+      'component',
+      'svelte',
+      'react',
+      'view',
+      'canvas',
+      'draw',
+      'paint',
+      'theme',
+      'color',
+      'font',
+      'icon',
+      'design',
+      'responsive',
+      'mobile',
+      'dark mode',
+      'light mode',
+      'sidebar',
+      'modal',
+    ],
+    backend: [
+      'c++',
+      'cpp',
+      'cmake',
+      'makefile',
+      'gtest',
+      'boost',
+      'llvm',
+      'clang',
+      'server',
+      'api',
+      'database',
+      'sql',
+      'grpc',
+      'protobuf',
+      'socket',
+      'memory',
+      'pointer',
+      'thread',
+      'mutex',
+      'algorithm',
+      'data structure',
+      'compiler',
+      'linker',
+      'binary',
+      'build',
+      'performance',
+      'optimization',
+      'kernel',
+      'driver',
+      'system',
+      'dsp',
+      'audio',
+      'midi',
+      'signal',
+    ],
+    general: [
+      'refactor',
+      'rename',
+      'move',
+      'organize',
+      'clean',
+      'lint',
+      'format',
+      'documentation',
+      'readme',
+      'comment',
+      'explain',
+      'review',
+      'improve',
+      'typescript',
+      'javascript',
+      'python',
+      'rust',
+      'go',
+    ],
+    review: ['review', 'audit', 'check', 'verify', 'validate'],
+    test: ['test', 'spec', 'gtest', 'jest', 'vitest', 'mocha', 'pytest'],
+    critic: ['critic', 'critique', 'audit', 'review', 'gate', 'quality'],
+  },
+  DEFAULT_MODELS: {
+    frontend: 'gpt-5.2-pro',
+    ui: 'gpt-5.2-pro',
+    backend: 'gemini-3.1-pro',
+    general: 'gemini-3-flash',
+    review: 'gpt-5.2-pro',
+    test: 'gpt-5.2-pro',
+    critic: 'claude-sonnet-4-6',
+  },
+  GLOW_COLORS: {
+    frontend: 'rgba(0,255,255,0.5)', // Cyan (alias for UI)
+    ui: 'rgba(0,255,255,0.5)', // Cyan
+    backend: 'rgba(128,0,128,0.5)', // Deep Purple
+    general: 'rgba(255,165,0,0.5)', // Orange (Claude)
+    review: 'rgba(255,165,0,0.5)', // Orange
+    test: 'rgba(0,255,128,0.5)', // Green
+    critic: 'rgba(255,0,0,0.6)', // Red (Harshest)
+  },
+} as const;

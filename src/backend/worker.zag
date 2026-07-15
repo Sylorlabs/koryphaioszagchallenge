@@ -1,0 +1,239 @@
+// backend/worker.zag — multi-agent orchestration: delegation + the critic gate.
+//
+// When Kory (the manager) calls delegate_to_worker, a worker ChatRun is spawned
+// with its own tool loop and a domain-specific brief. Its result is reviewed by
+// a fresh-context, read-only Critic that must end its reply with PASS or FAIL;
+// on FAIL the worker re-runs with the critique (up to 3 attempts). Only when the
+// critic passes (or attempts are exhausted) is the result reported back to the
+// manager as the delegate tool's result, unblocking the manager's next turn.
+
+@import("chat.zag")
+
+fn MAX_ATTEMPTS() i32 { return 3; }
+
+// ── worker / critic prompts ────────────────────────────────────────────────────
+
+fn worker_system_prompt(domain: []u8) []u8 {
+    return _zag_str_concat(
+        "You are a Koryphaios worker agent specializing in the ",
+        _zag_str_concat(domain,
+        " domain. You have tools — bash, read_file, write_file, edit_file, ls, grep, glob — use them to actually complete the assigned task on the project. Work autonomously, make the changes, and end with a concise summary of exactly what you did. Do not ask questions; decide and act."));
+}
+
+fn critic_system_prompt() []u8 {
+    return "You are a Koryphaios critic: a rigorous, read-only reviewer. You are given an objective and a worker's report. Use only read_file, grep, glob, and ls to verify the work against the objective. Be skeptical. Your reply MUST end with a line that begins with exactly PASS or FAIL, followed by a one-line justification.";
+}
+
+// ── spawn a worker ─────────────────────────────────────────────────────────────
+
+fn worker_agent_id(domain: []u8, id: []u8) []u8 {
+    return _zag_str_concat("worker-", _zag_str_concat(domain, _zag_str_concat("-", id)));
+}
+
+fn worker_glow(domain: []u8) []u8 {
+    if (str_eq(domain, "ui")) { return "rgba(255,165,0,.5)"; }
+    if (str_eq(domain, "backend")) { return "rgba(0,255,255,.5)"; }
+    if (str_eq(domain, "test")) { return "rgba(0,255,128,.5)"; }
+    if (str_eq(domain, "review")) { return "rgba(213,178,97,.6)"; }
+    return "rgba(160,160,255,.5)";
+}
+
+fn worker_build_transcript(domain: []u8, task: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "[{\"role\":\"system\",\"content\":\"");
+    sb_app(&sb, str_escape_json(worker_system_prompt(domain)));
+    sb_app(&sb, "\"},{\"role\":\"user\",\"content\":\"");
+    sb_app(&sb, str_escape_json(task));
+    sb_app(&sb, "\"}");
+    return sb_slice(&sb);
+}
+
+fn spawn_worker(srv: *HttpServer, app: *AppState, mgr: *ChatRun, domain: []u8, task: []u8, call_id: []u8, attempt: i32) void {
+    let sess: ?*Session = store_find(app.*.store, mgr.*.session_id);
+    if (sess) |s| {
+        let w: *ChatRun = chat_new_run(app, s, mgr.*.provider, mgr.*.model, mgr.*.reasoning);
+        w.*.is_worker = true;
+        w.*.domain = _zag_strdup(domain);
+        w.*.agent_id = worker_agent_id(domain, w.*.id);
+        w.*.label = _zag_strdup(domain);
+        w.*.parent_id = _zag_strdup(mgr.*.id);
+        w.*.worker_call_id = _zag_strdup(call_id);
+        w.*.parent_task = _zag_strdup(task);
+        w.*.attempt = attempt;
+        w.*.transcript = worker_build_transcript(domain, task);
+        push[*ChatRun](&app.*.runs, w);
+
+        // agent.spawned
+        let sb: StrBuf = sb_make();
+        sb_app(&sb, "{\"agent\":{\"id\":\"");
+        sb_app(&sb, w.*.agent_id);
+        sb_app(&sb, "\",\"name\":\"");
+        sb_app(&sb, domain);
+        sb_app(&sb, " worker\",\"role\":\"worker\",\"model\":\"");
+        sb_app(&sb, w.*.model);
+        sb_app(&sb, "\",\"provider\":\"");
+        sb_app(&sb, w.*.provider.*.name);
+        sb_app(&sb, "\",\"domain\":\"");
+        sb_app(&sb, domain);
+        sb_app(&sb, "\",\"glowColor\":\"");
+        sb_app(&sb, worker_glow(domain));
+        sb_app(&sb, "\"},\"task\":\"");
+        sb_app(&sb, str_escape_json(task));
+        sb_app(&sb, "\",\"parentAgentId\":\"");
+        sb_app(&sb, mgr.*.agent_id);
+        sb_app(&sb, "\"}");
+        ws_emit(srv, "agent.spawned", sb_slice(&sb), w.*.session_id, w.*.agent_id);
+        chat_emit_status(srv, w, "thinking");
+        chat_launch(srv, app, w);
+    } else {
+        // session vanished — fail the delegate cleanly
+        worker_resolve_manager(srv, app, mgr, call_id, "Worker could not start: session not found.");
+    }
+}
+
+// ── spawn a critic to review a finished worker ─────────────────────────────────
+
+fn critic_build_transcript(task: []u8, worker_result: []u8) []u8 {
+    let cap: i32 = worker_result.len;
+    if (cap > 12000) { cap = 12000; }
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "[{\"role\":\"system\",\"content\":\"");
+    sb_app(&sb, str_escape_json(critic_system_prompt()));
+    sb_app(&sb, "\"},{\"role\":\"user\",\"content\":\"");
+    let usb: StrBuf = sb_make();
+    sb_app(&usb, "Objective:\n");
+    sb_app(&usb, task);
+    sb_app(&usb, "\n\nWorker report:\n");
+    sb_app(&usb, worker_result[0..cap]);
+    sb_app(&usb, "\n\nVerify the work against the objective, then end with PASS or FAIL.");
+    sb_app(&sb, str_escape_json(sb_slice(&usb)));
+    sb_app(&sb, "\"}");
+    return sb_slice(&sb);
+}
+
+fn spawn_critic(srv: *HttpServer, app: *AppState, worker: *ChatRun, worker_result: []u8) void {
+    let sess: ?*Session = store_find(app.*.store, worker.*.session_id);
+    if (sess) |s| {
+        let c: *ChatRun = chat_new_run(app, s, worker.*.provider, worker.*.model, worker.*.reasoning);
+        c.*.is_worker = true;
+        c.*.critic_of = _zag_strdup(worker.*.id);
+        c.*.parent_id = _zag_strdup(worker.*.parent_id);
+        c.*.worker_call_id = _zag_strdup(worker.*.worker_call_id);
+        c.*.domain = _zag_strdup(worker.*.domain);
+        c.*.parent_task = _zag_strdup(worker.*.parent_task);
+        c.*.attempt = worker.*.attempt;
+        c.*.carry = _zag_strdup(worker_result);
+        c.*.agent_id = _zag_str_concat("critic-", worker.*.id);
+        c.*.label = "Critic";
+        c.*.transcript = critic_build_transcript(worker.*.parent_task, worker_result);
+        push[*ChatRun](&app.*.runs, c);
+
+        let sb: StrBuf = sb_make();
+        sb_app(&sb, "{\"agent\":{\"id\":\"");
+        sb_app(&sb, c.*.agent_id);
+        sb_app(&sb, "\",\"name\":\"Critic\",\"role\":\"critic\",\"model\":\"");
+        sb_app(&sb, c.*.model);
+        sb_app(&sb, "\",\"provider\":\"");
+        sb_app(&sb, c.*.provider.*.name);
+        sb_app(&sb, "\",\"domain\":\"review\",\"glowColor\":\"rgba(213,178,97,.6)\"},\"task\":\"Review worker output\",\"parentAgentId\":\"");
+        sb_app(&sb, worker.*.agent_id);
+        sb_app(&sb, "\"}");
+        ws_emit(srv, "agent.spawned", sb_slice(&sb), c.*.session_id, c.*.agent_id);
+        chat_emit_status(srv, c, "verifying");
+        chat_launch(srv, app, c);
+    } else {
+        worker_resolve_manager(srv, app, worker, worker.*.worker_call_id, worker_result);
+    }
+}
+
+// ── verdict parsing ────────────────────────────────────────────────────────────
+
+// A critic passes iff its last non-empty line starts with PASS.
+fn critic_passed(text: []u8) bool {
+    let i: i32 = text.len - 1;
+    let end: i32 = text.len;
+    // trim trailing whitespace
+    while (end > 0 && (text[end - 1] == 10 || text[end - 1] == 13 || text[end - 1] == 32)) { end = end - 1; }
+    i = end - 1;
+    let line_start: i32 = 0;
+    let found: bool = false;
+    while (i >= 0 && !found) {
+        if (text[i] == 10) { line_start = i + 1; found = true; }
+        i = i - 1;
+    }
+    if (!found) { line_start = 0; }
+    let last: []u8 = str_trim(text[line_start..end]);
+    return str_starts_with(last, "PASS");
+}
+
+// ── report a worker/critic result back to the waiting manager ─────────────────
+
+// Append the delegate tool's result to the manager transcript and, when all its
+// workers have reported, resume the manager's next turn.
+fn worker_resolve_manager(srv: *HttpServer, app: *AppState, child: *ChatRun, call_id: []u8, result_text: []u8) void {
+    let maybe: ?*ChatRun = chat_find_run_by_id(app, child.*.parent_id);
+    if (maybe) |mgr| {
+        // emit the delegate's tool_result to the UI
+        let res: ToolResult = ToolResult{ .output = result_text, .is_error = false, .duration_ms = 0 };
+        chat_emit_tool_result(srv, mgr, call_id, "delegate_to_worker", res);
+
+        // append the role:tool message to the manager transcript
+        let ocap: i32 = result_text.len;
+        if (ocap > TOOL_CTX_CAP()) { ocap = TOOL_CTX_CAP(); }
+        let tsb: StrBuf = sb_make();
+        sb_app(&tsb, mgr.*.transcript);
+        sb_app(&tsb, ",{\"role\":\"tool\",\"tool_call_id\":\"");
+        sb_app(&tsb, call_id);
+        sb_app(&tsb, "\",\"content\":\"");
+        sb_app(&tsb, str_escape_json(result_text[0..ocap]));
+        sb_app(&tsb, "\"}");
+        mgr.*.transcript = sb_slice(&tsb);
+
+        mgr.*.pending_workers = mgr.*.pending_workers - 1;
+        if (mgr.*.pending_workers <= 0 && mgr.*.state == 5) {
+            chat_emit_status(srv, mgr, "synthesizing");
+            chat_resume_next_turn(srv, app, mgr);
+        }
+    }
+}
+
+// Called from chat_finalize when a worker or critic run finishes (is_worker).
+// Overrides the stub in chat.zag via the merged-namespace late binding.
+fn worker_on_finished(srv: *HttpServer, app: *AppState, run: *ChatRun) void {
+    let result: []u8 = _zag_strdup(run.*.text.data[0..run.*.text.len]);
+
+    if (run.*.critic_of.len > 0) {
+        // a critic finished — decide pass/fail
+        let passed: bool = critic_passed(result);
+        if (passed || run.*.attempt >= MAX_ATTEMPTS()) {
+            let verdict: []u8 = "PASS";
+            if (!passed) { verdict = "FAIL (max attempts)"; }
+            let report: StrBuf = sb_make();
+            sb_app(&report, run.*.carry);
+            sb_app(&report, "\n\n[critic verdict: ");
+            sb_app(&report, verdict);
+            sb_app(&report, "]");
+            worker_resolve_manager(srv, app, run, run.*.worker_call_id, sb_slice(&report));
+        } else {
+            // FAIL → re-run the worker with the critique appended
+            let feedback: StrBuf = sb_make();
+            sb_app(&feedback, run.*.parent_task);
+            sb_app(&feedback, "\n\nA previous attempt was rejected by review. Critique:\n");
+            sb_app(&feedback, result);
+            sb_app(&feedback, "\n\nAddress the critique and complete the task.");
+            spawn_worker(srv, app, chat_find_run_or_self(app, run.*.parent_id, run), run.*.domain, sb_slice(&feedback), run.*.worker_call_id, run.*.attempt + 1);
+        }
+        return;
+    }
+
+    // a worker finished — send it to the critic gate
+    if (result.len == 0) { result = "(worker produced no output)"; }
+    spawn_critic(srv, app, run, result);
+}
+
+// Find a run by id, or fall back to the given run (defensive).
+fn chat_find_run_or_self(app: *AppState, id: []u8, fallback: *ChatRun) *ChatRun {
+    let maybe: ?*ChatRun = chat_find_run_by_id(app, id);
+    if (maybe) |r| { return r; }
+    return fallback;
+}

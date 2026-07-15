@@ -1,0 +1,416 @@
+// Theme system — multiple presets, accent colors, fonts, Svelte 5 runes
+
+export type ThemePreset =
+  | 'kintsugi'
+  | 'midnight'
+  | 'nord'
+  | 'dracula'
+  | 'catppuccin'
+  | 'gruvbox'
+  | 'tokyo'
+  | 'solarized'
+  | 'light'
+  | 'system';
+export type AccentColor = 'gold' | 'indigo' | 'cyan' | 'emerald' | 'amber' | 'rose' | 'violet';
+export type FontFamily =
+  | 'inter'
+  | 'geist'
+  | 'jetbrains'
+  | 'roboto'
+  | 'outfit'
+  | 'space-grotesk'
+  | 'dm-sans'
+  | 'plus-jakarta'
+  | 'source-code-pro'
+  | 'ibm-plex-mono'
+  | 'fira-code'
+  | 'berkeley-mono'
+  | 'source-serif'
+  | 'roboto-slab';
+
+export interface ThemeConfig {
+  preset: ThemePreset;
+  accent: AccentColor;
+  font: FontFamily;
+}
+
+const THEME_PRESETS: Record<Exclude<ThemePreset, 'system'>, Record<string, string>> = {
+  kintsugi: {
+    '--color-surface-0': '#0D0B0A',
+    '--color-surface-1': '#141210',
+    '--color-surface-2': '#1C1917',
+    '--color-surface-3': '#262220',
+    '--color-surface-4': '#302B28',
+    '--color-border': 'rgba(213, 178, 97, 0.16)',
+    '--color-border-bright': 'rgba(213, 178, 97, 0.36)',
+    '--color-text-primary': '#F6EFE2',
+    '--color-text-secondary': 'rgba(214, 206, 192, 0.74)',
+    '--color-text-muted': 'rgba(214, 206, 192, 0.40)',
+    // Semantic status colors
+    '--color-success': '#22c55e',
+    '--color-success-bg': 'rgba(34, 197, 94, 0.15)',
+    '--color-error': '#ef4444',
+    '--color-error-bg': 'rgba(239, 68, 68, 0.15)',
+    '--color-warning': '#f59e0b',
+    '--color-warning-bg': 'rgba(245, 158, 11, 0.15)',
+    '--color-info': '#3b82f6',
+    '--color-info-bg': 'rgba(59, 130, 246, 0.15)',
+    '--color-added': '#22c55e',
+    '--color-removed': '#ef4444',
+    '--color-modified': '#f59e0b',
+  },
+  midnight: {
+    '--color-surface-0': '#0a0a0b',
+    '--color-surface-1': '#111113',
+    '--color-surface-2': '#1a1a1e',
+    '--color-surface-3': '#242428',
+    '--color-surface-4': '#2e2e34',
+    '--color-border': '#2a2a30',
+    '--color-border-bright': '#3a3a42',
+    '--color-text-primary': '#e8e8ed',
+    '--color-text-secondary': '#8b8b96',
+    '--color-text-muted': '#5a5a66',
+    '--color-success': '#4ade80',
+    '--color-success-bg': 'rgba(74, 222, 128, 0.15)',
+    '--color-error': '#f87171',
+    '--color-error-bg': 'rgba(248, 113, 113, 0.15)',
+    '--color-warning': '#fbbf24',
+    '--color-warning-bg': 'rgba(251, 191, 36, 0.15)',
+    '--color-info': '#60a5fa',
+    '--color-info-bg': 'rgba(96, 165, 250, 0.15)',
+    '--color-added': '#4ade80',
+    '--color-removed': '#f87171',
+    '--color-modified': '#fbbf24',
+  },
+  nord: {
+    '--color-surface-0': '#2e3440',
+    '--color-surface-1': '#3b4252',
+    '--color-surface-2': '#434c5e',
+    '--color-surface-3': '#4c566a',
+    '--color-surface-4': '#5a657d',
+    '--color-border': '#4c566a',
+    '--color-border-bright': '#5a657d',
+    '--color-text-primary': '#eceff4',
+    '--color-text-secondary': '#d8dee9',
+    '--color-text-muted': '#81a1c1',
+    '--color-success': '#a3be8c',
+    '--color-success-bg': 'rgba(163, 190, 140, 0.2)',
+    '--color-error': '#bf616a',
+    '--color-error-bg': 'rgba(191, 97, 106, 0.2)',
+    '--color-warning': '#ebcb8b',
+    '--color-warning-bg': 'rgba(235, 203, 139, 0.2)',
+    '--color-info': '#81a1c1',
+    '--color-info-bg': 'rgba(129, 161, 193, 0.2)',
+    '--color-added': '#a3be8c',
+    '--color-removed': '#bf616a',
+    '--color-modified': '#ebcb8b',
+  },
+  dracula: {
+    '--color-surface-0': '#1e1f29',
+    '--color-surface-1': '#282a36',
+    '--color-surface-2': '#2d303e',
+    '--color-surface-3': '#343746',
+    '--color-surface-4': '#3c3f52',
+    '--color-border': '#44475a',
+    '--color-border-bright': '#555870',
+    '--color-text-primary': '#f8f8f2',
+    '--color-text-secondary': '#c7c7d1',
+    '--color-text-muted': '#6272a4',
+    '--color-success': '#50fa7b',
+    '--color-success-bg': 'rgba(80, 250, 123, 0.15)',
+    '--color-error': '#ff5555',
+    '--color-error-bg': 'rgba(255, 85, 85, 0.15)',
+    '--color-warning': '#f1fa8c',
+    '--color-warning-bg': 'rgba(241, 250, 140, 0.15)',
+    '--color-info': '#8be9fd',
+    '--color-info-bg': 'rgba(139, 233, 253, 0.15)',
+    '--color-added': '#50fa7b',
+    '--color-removed': '#ff5555',
+    '--color-modified': '#f1fa8c',
+  },
+  catppuccin: {
+    '--color-surface-0': '#1e1e2e',
+    '--color-surface-1': '#24243a',
+    '--color-surface-2': '#2a2a42',
+    '--color-surface-3': '#313148',
+    '--color-surface-4': '#3a3a52',
+    '--color-border': '#3a3a52',
+    '--color-border-bright': '#4a4a65',
+    '--color-text-primary': '#cdd6f4',
+    '--color-text-secondary': '#a6adc8',
+    '--color-text-muted': '#6c7086',
+    '--color-success': '#a6e3a1',
+    '--color-success-bg': 'rgba(166, 227, 161, 0.15)',
+    '--color-error': '#f38ba8',
+    '--color-error-bg': 'rgba(243, 139, 168, 0.15)',
+    '--color-warning': '#f9e2af',
+    '--color-warning-bg': 'rgba(249, 226, 175, 0.15)',
+    '--color-info': '#89b4fa',
+    '--color-info-bg': 'rgba(137, 180, 250, 0.15)',
+    '--color-added': '#a6e3a1',
+    '--color-removed': '#f38ba8',
+    '--color-modified': '#f9e2af',
+  },
+  gruvbox: {
+    '--color-surface-0': '#1d2021',
+    '--color-surface-1': '#282828',
+    '--color-surface-2': '#32302f',
+    '--color-surface-3': '#3c3836',
+    '--color-surface-4': '#504945',
+    '--color-border': '#504945',
+    '--color-border-bright': '#665c54',
+    '--color-text-primary': '#ebdbb2',
+    '--color-text-secondary': '#d5c4a1',
+    '--color-text-muted': '#a89984',
+    '--color-success': '#b8bb26',
+    '--color-success-bg': 'rgba(184, 187, 38, 0.2)',
+    '--color-error': '#fb4934',
+    '--color-error-bg': 'rgba(251, 73, 52, 0.2)',
+    '--color-warning': '#fabd2f',
+    '--color-warning-bg': 'rgba(250, 189, 47, 0.2)',
+    '--color-info': '#83a598',
+    '--color-info-bg': 'rgba(131, 165, 152, 0.2)',
+    '--color-added': '#b8bb26',
+    '--color-removed': '#fb4934',
+    '--color-modified': '#fabd2f',
+  },
+  tokyo: {
+    '--color-surface-0': '#1a1b26',
+    '--color-surface-1': '#1f2335',
+    '--color-surface-2': '#24283b',
+    '--color-surface-3': '#2a2f45',
+    '--color-surface-4': '#343b58',
+    '--color-border': '#343b58',
+    '--color-border-bright': '#414868',
+    '--color-text-primary': '#c0caf5',
+    '--color-text-secondary': '#a9b1d6',
+    '--color-text-muted': '#7a84a7',
+    '--color-success': '#9ece6a',
+    '--color-success-bg': 'rgba(158, 206, 106, 0.15)',
+    '--color-error': '#f7768e',
+    '--color-error-bg': 'rgba(247, 118, 142, 0.15)',
+    '--color-warning': '#e0af68',
+    '--color-warning-bg': 'rgba(224, 175, 104, 0.15)',
+    '--color-info': '#7aa2f7',
+    '--color-info-bg': 'rgba(122, 162, 247, 0.15)',
+    '--color-added': '#9ece6a',
+    '--color-removed': '#f7768e',
+    '--color-modified': '#e0af68',
+  },
+  solarized: {
+    '--color-surface-0': '#002b36',
+    '--color-surface-1': '#073642',
+    '--color-surface-2': '#0b3f4a',
+    '--color-surface-3': '#124853',
+    '--color-surface-4': '#1a5563',
+    '--color-border': '#1a5563',
+    '--color-border-bright': '#2b6776',
+    '--color-text-primary': '#93a1a1',
+    '--color-text-secondary': '#839496',
+    '--color-text-muted': '#657b83',
+    '--color-success': '#859900',
+    '--color-success-bg': 'rgba(133, 153, 0, 0.2)',
+    '--color-error': '#dc322f',
+    '--color-error-bg': 'rgba(220, 50, 47, 0.2)',
+    '--color-warning': '#b58900',
+    '--color-warning-bg': 'rgba(181, 137, 0, 0.2)',
+    '--color-info': '#268bd2',
+    '--color-info-bg': 'rgba(38, 139, 210, 0.2)',
+    '--color-added': '#859900',
+    '--color-removed': '#dc322f',
+    '--color-modified': '#b58900',
+  },
+  light: {
+    '--color-surface-0': '#ffffff',
+    '--color-surface-1': '#f8f9fa',
+    '--color-surface-2': '#f1f3f5',
+    '--color-surface-3': '#e9ecef',
+    '--color-surface-4': '#dee2e6',
+    '--color-border': '#dee2e6',
+    '--color-border-bright': '#ced4da',
+    '--color-text-primary': '#212529',
+    '--color-text-secondary': '#495057',
+    '--color-text-muted': '#868e96',
+    '--color-success': '#16a34a',
+    '--color-success-bg': 'rgba(22, 163, 74, 0.12)',
+    '--color-error': '#dc2626',
+    '--color-error-bg': 'rgba(220, 38, 38, 0.12)',
+    '--color-warning': '#d97706',
+    '--color-warning-bg': 'rgba(217, 119, 6, 0.12)',
+    '--color-info': '#2563eb',
+    '--color-info-bg': 'rgba(37, 99, 235, 0.12)',
+    '--color-added': '#16a34a',
+    '--color-removed': '#dc2626',
+    '--color-modified': '#d97706',
+  },
+};
+
+const ACCENT_COLORS: Record<AccentColor, { main: string; hover: string }> = {
+  gold: { main: '#D5B261', hover: '#F3DDB0' },
+  indigo: { main: '#6366f1', hover: '#818cf8' },
+  cyan: { main: '#06b6d4', hover: '#22d3ee' },
+  emerald: { main: '#10b981', hover: '#34d399' },
+  amber: { main: '#f59e0b', hover: '#fbbf24' },
+  rose: { main: '#f43f5e', hover: '#fb7185' },
+  violet: { main: '#8b5cf6', hover: '#a78bfa' },
+};
+
+const FONT_FAMILIES: Record<FontFamily, string> = {
+  inter: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+  geist: "'Geist Sans', 'Inter', -apple-system, sans-serif",
+  jetbrains: "'JetBrains Mono', 'SF Mono', monospace",
+  roboto: "'Roboto', -apple-system, BlinkMacSystemFont, sans-serif",
+  outfit: "'Outfit', 'Inter', sans-serif",
+  'space-grotesk': "'Space Grotesk', 'Inter', sans-serif",
+  'dm-sans': "'DM Sans', 'Inter', sans-serif",
+  'plus-jakarta': "'Plus Jakarta Sans', 'Inter', sans-serif",
+  'source-code-pro': "'Source Code Pro', 'SF Mono', monospace",
+  'ibm-plex-mono': "'IBM Plex Mono', 'SF Mono', monospace",
+  'fira-code': "'Fira Code', 'JetBrains Mono', monospace",
+  'berkeley-mono': "'Berkeley Mono', 'JetBrains Mono', 'SF Mono', monospace",
+  'source-serif': "'Source Serif 4', Georgia, 'Times New Roman', serif",
+  'roboto-slab': "'Roboto Slab', 'Roboto', Georgia, serif",
+};
+
+import { browser } from '$app/environment';
+
+function createThemeStore() {
+  const defaults: ThemeConfig = { preset: 'kintsugi', accent: 'gold', font: 'inter' };
+
+  // Load from localStorage
+  let savedConfig: ThemeConfig = defaults;
+  if (browser) {
+    try {
+      const stored = localStorage.getItem('koryphaios-theme');
+      if (stored) savedConfig = { ...defaults, ...JSON.parse(stored) };
+    } catch {}
+  }
+
+  let preset = $state<ThemePreset>(savedConfig.preset);
+  let accent = $state<AccentColor>(savedConfig.accent);
+  let font = $state<FontFamily>(savedConfig.font);
+
+  function applyToDOM() {
+    if (!browser) return;
+
+    const resolvedPreset = resolvePreset(preset);
+    const vars = THEME_PRESETS[resolvedPreset];
+    const accentVars = ACCENT_COLORS[accent];
+    const root = document.documentElement;
+
+    if (!vars || !accentVars) return;
+
+    for (const [key, val] of Object.entries(vars)) {
+      root.style.setProperty(key, val);
+    }
+    root.style.setProperty('--color-accent', accentVars.main);
+    root.style.setProperty('--color-accent-hover', accentVars.hover);
+    root.style.setProperty('--font-sans', FONT_FAMILIES[font]);
+
+    const isLight = resolvedPreset === 'light';
+    root.setAttribute('data-theme', isLight ? 'light' : 'dark');
+    root.style.colorScheme = isLight ? 'light' : 'dark';
+  }
+
+  function resolvePreset(p: ThemePreset): Exclude<ThemePreset, 'system'> {
+    if (p !== 'system') return p;
+    if (browser && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      return 'light';
+    }
+    return 'kintsugi';
+  }
+
+  function save() {
+    if (browser) {
+      localStorage.setItem('koryphaios-theme', JSON.stringify({ preset, accent, font }));
+    }
+    applyToDOM();
+  }
+
+  return {
+    get preset() {
+      return preset;
+    },
+    get accent() {
+      return accent;
+    },
+    get font() {
+      return font;
+    },
+    get isDark() {
+      return resolvePreset(preset) !== 'light';
+    },
+
+    setPreset(p: ThemePreset) {
+      preset = p;
+      save();
+    },
+    setAccent(a: AccentColor) {
+      accent = a;
+      save();
+    },
+    setFont(f: FontFamily) {
+      font = f;
+      save();
+    },
+
+    get presets(): Array<{ id: ThemePreset; label: string }> {
+      return [
+        { id: 'kintsugi', label: 'Kintsugi' },
+        { id: 'midnight', label: 'Midnight' },
+        { id: 'nord', label: 'Nord' },
+        { id: 'dracula', label: 'Dracula' },
+        { id: 'catppuccin', label: 'Catppuccin' },
+        { id: 'gruvbox', label: 'Gruvbox' },
+        { id: 'tokyo', label: 'Tokyo Night' },
+        { id: 'solarized', label: 'Solarized Dark' },
+        { id: 'light', label: 'Light' },
+        { id: 'system', label: 'System' },
+      ];
+    },
+    get accents(): Array<{ id: AccentColor; label: string; color: string }> {
+      return [
+        { id: 'gold', label: 'Kintsugi Gold', color: '#D5B261' },
+        { id: 'indigo', label: 'Indigo', color: '#6366f1' },
+        { id: 'cyan', label: 'Cyan', color: '#06b6d4' },
+        { id: 'emerald', label: 'Emerald', color: '#10b981' },
+        { id: 'amber', label: 'Amber', color: '#f59e0b' },
+        { id: 'rose', label: 'Rose', color: '#f43f5e' },
+        { id: 'violet', label: 'Violet', color: '#8b5cf6' },
+      ];
+    },
+    get fonts(): Array<{ id: FontFamily; label: string; category: string }> {
+      // Curated for VISUAL DISTINCTION — each option is a clearly different typeface
+      // (neutral vs geometric vs grotesque sans, a true serif, a slab, and three monos
+      // with distinct character). Lookalike sans/monos were removed from the picker; their
+      // ids still resolve in FONT_FAMILIES so any previously-saved selection keeps working.
+      return [
+        { id: 'inter', label: 'Inter', category: 'Sans Serif' },
+        { id: 'geist', label: 'Geist', category: 'Sans Serif' },
+        { id: 'space-grotesk', label: 'Space Grotesk', category: 'Sans Serif' },
+        { id: 'source-serif', label: 'Source Serif', category: 'Serif' },
+        { id: 'roboto-slab', label: 'Roboto Slab', category: 'Serif' },
+        { id: 'jetbrains', label: 'JetBrains Mono', category: 'Monospace' },
+        { id: 'fira-code', label: 'Fira Code', category: 'Monospace' },
+        { id: 'ibm-plex-mono', label: 'IBM Plex Mono', category: 'Monospace' },
+      ];
+    },
+    /** Font-family CSS value for a font id (for previews so each option shows in its own typeface). */
+    getFontFamily(id: FontFamily): string {
+      return FONT_FAMILIES[id];
+    },
+
+    init() {
+      if (!browser) return;
+      applyToDOM();
+      const mql = window.matchMedia('(prefers-color-scheme: dark)');
+      const handler = () => {
+        if (preset === 'system') applyToDOM();
+      };
+      mql.addEventListener('change', handler);
+      return () => mql.removeEventListener('change', handler);
+    },
+  };
+}
+
+export const theme = createThemeStore();

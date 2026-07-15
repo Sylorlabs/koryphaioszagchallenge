@@ -1,0 +1,92 @@
+// src/zrt/base64.zag — standard-alphabet Base64 (RFC 4648) with padding.
+//
+// b64_encode: []u8 -> []u8 (malloc'd, '='-padded).
+// b64_decode: []u8 -> []u8 (malloc'd; ignores ASCII whitespace, stops at '=';
+//             returns "" for inputs containing invalid characters).
+
+@import("str.zag")
+
+fn b64_alphabet() []u8 {
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+}
+
+// Value of one base64 character, -1 if invalid, -2 for '='.
+fn b64_char_val(c: u8) i32 {
+    if (c >= 'A' && c <= 'Z') { return (c as i32) - ('A' as i32); }
+    if (c >= 'a' && c <= 'z') { return (c as i32) - ('a' as i32) + 26; }
+    if (c >= '0' && c <= '9') { return (c as i32) - ('0' as i32) + 52; }
+    if (c == '+') { return 62; }
+    if (c == '/') { return 63; }
+    if (c == '=') { return 0 - 2; }
+    return 0 - 1;
+}
+
+fn b64_encode(data: []u8) []u8 {
+    let alpha: []u8 = b64_alphabet();
+    let groups: i32 = (data.len + 2) / 3;
+    let out_len: i32 = groups * 4;
+    if (out_len < 1) { out_len = 1; }   // malloc(0) guard; slice below uses real len
+    let raw: *i8 = _zag_malloc(out_len);
+    let out: *u8 = raw as *u8;
+
+    let i: i32 = 0;
+    let o: i32 = 0;
+    while (i + 2 < data.len) {
+        let n: i32 = ((data[i] as i32) << 16) | ((data[i + 1] as i32) << 8) | (data[i + 2] as i32);
+        out[o] = alpha[(n >> 18) & 63];
+        out[o + 1] = alpha[(n >> 12) & 63];
+        out[o + 2] = alpha[(n >> 6) & 63];
+        out[o + 3] = alpha[n & 63];
+        i = i + 3;
+        o = o + 4;
+    }
+    let rem: i32 = data.len - i;
+    if (rem == 1) {
+        let n: i32 = (data[i] as i32) << 16;
+        out[o] = alpha[(n >> 18) & 63];
+        out[o + 1] = alpha[(n >> 12) & 63];
+        out[o + 2] = '=' as u8;
+        out[o + 3] = '=' as u8;
+        o = o + 4;
+    } else if (rem == 2) {
+        let n: i32 = ((data[i] as i32) << 16) | ((data[i + 1] as i32) << 8);
+        out[o] = alpha[(n >> 18) & 63];
+        out[o + 1] = alpha[(n >> 12) & 63];
+        out[o + 2] = alpha[(n >> 6) & 63];
+        out[o + 3] = '=' as u8;
+        o = o + 4;
+    }
+    return out[0..o];
+}
+
+fn b64_decode(s: []u8) []u8 {
+    let out: ArrayList[u8] = make[u8](s.len);
+    let acc: i32 = 0;
+    let nbits: i32 = 0;
+    let i: i32 = 0;
+    let ok: bool = true;
+    let done: bool = false;
+    while (ok && done == false && i < s.len) {
+        let c: u8 = s[i];
+        if (c == 32 || c == 9 || c == 10 || c == 13) {
+            i = i + 1;
+        } else {
+            let v: i32 = b64_char_val(c);
+            if (v == 0 - 2) {
+                done = true;   // '=' padding: stop
+            } else if (v < 0) {
+                ok = false;    // invalid character
+            } else {
+                acc = (acc << 6) | v;
+                nbits = nbits + 6;
+                if (nbits >= 8) {
+                    nbits = nbits - 8;
+                    push[u8](&out, ((acc >> nbits) & 255) as u8);
+                }
+                i = i + 1;
+            }
+        }
+    }
+    if (ok == false) { return ""; }
+    return out.data[0..out.len];
+}

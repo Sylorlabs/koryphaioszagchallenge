@@ -1,0 +1,6 @@
+@import("../zagstd/rt.zag")
+
+fn main() i32 {
+    _zag_println("hello from zag");
+    return 0;
+}

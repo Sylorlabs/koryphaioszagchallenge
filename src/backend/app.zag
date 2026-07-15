@@ -1,0 +1,409 @@
+// backend/app.zag — application state: providers, auth, WS event fanout.
+
+@import("../zrt/ws.zag")
+@import("store.zag")
+
+// ── providers ─────────────────────────────────────────────────────────────────
+
+struct Provider {
+    name: []u8,
+    label: []u8,
+    auth_mode: []u8,          // "api_key_or_auth" | "base_url_only" | "none"
+    supports_api_key: bool,
+    requires_base_url: bool,
+    deployment: []u8,         // "cloud" | "local"
+    api_key: []u8,            // "" = none
+    base_url: []u8,           // "" = default
+    authenticated: bool,
+    models_json: []u8,        // prebuilt allAvailableModels array (API shape)
+    model_ids_json: []u8,     // prebuilt ["id",...] array
+    default_model: []u8,
+}
+
+struct ChatRun {
+    id: []u8,
+    session_id: []u8,
+    provider: *Provider,
+    model: []u8,
+    reasoning: []u8,
+    state: i32,               // 0=new 1=connecting 2=await-response 3=streaming 9=finished
+    fd: i64,                  // outbound socket (-1 for demo)
+    is_demo: bool,
+    demo_pos: i32,
+    demo_text: []u8,
+    request_body: []u8,       // HTTP payload to send once connected
+    headers_done: bool,
+    chunked: bool,
+    chunk_left: i64,          // bytes remaining in current chunk (-1 = expect size line)
+    sse_buf: ArrayList[u8],   // pending partial SSE line bytes
+    text: ArrayList[u8],      // accumulated assistant text (this turn)
+    delta_buf: ArrayList[u8], // coalescing buffer for stream.delta
+    last_flush_ms: i64,
+    started_ms: i64,
+    tokens_in: i64,
+    tokens_out: i64,
+    cancelled: bool,
+    // ── multi-turn tool loop ──
+    transcript: []u8,         // messages JSON array WITHOUT trailing ']' (grows per turn)
+    turn: i32,                // turn counter (cap 25)
+    tc_id: ArrayList[[]u8],   // tool-call ids buffered this turn
+    tc_name: ArrayList[[]u8], // tool-call names
+    tc_args: ArrayList[[]u8], // tool-call argument JSON (accumulated fragments)
+    finish_reason: []u8,      // last stream's finish_reason
+    is_worker: bool,          // spawned worker (vs manager)
+    agent_id: []u8,           // WS agentId for this run
+    label: []u8,              // display name (Kory / worker domain)
+    critic_of: []u8,          // if set, this run reviews the named worker run id
+    parent_task: []u8,        // objective (for workers/critics)
+    // ── delegation state ──
+    pending_workers: i32,     // outstanding worker runs a manager is awaiting
+    parent_id: []u8,          // for a worker/critic: the run id that spawned it
+    worker_call_id: []u8,     // the delegate tool_call_id this worker fulfills
+    domain: []u8,             // worker domain (general/ui/backend/test/review)
+    attempt: i32,             // worker attempt number (critic re-run counter)
+    carry: []u8,              // worker result carried through the critic review
+    ask_call_id: []u8,        // pending ask_user tool_call_id (run paused for input)
+    tls: i64,                 // *TlsConn for HTTPS providers (0 = plaintext/ollama)
+    tls_off: i32,             // bytes of the TLS plaintext already fed to the HTTP parser
+    http_status: i32,         // HTTP status of the provider response (0 = unknown)
+}
+
+// A supervised background shell process.
+struct Proc {
+    id: []u8,
+    pid: i64,
+    command: []u8,
+    status: []u8,             // "running" | "exited"
+    exit_code: i64,
+    out_file: []u8,
+    session_id: []u8,
+    started_ms: i64,
+}
+
+struct AppState {
+    store: *Store,
+    providers: ArrayList[*Provider],
+    runs: ArrayList[*ChatRun],
+    procs: ArrayList[*Proc],
+    boot_secret: []u8,
+    data_dir: []u8,
+    static_dir: []u8,
+    project_name: []u8,
+    started_ms: i64,
+    version: []u8,
+    last_ping_ms: i64,
+}
+
+fn app_of(srv: *HttpServer) *AppState {
+    return srv.*.app_data as *AppState;
+}
+
+// ── provider catalog ──────────────────────────────────────────────────────────
+
+fn model_entry(id: []u8, name: []u8, provider: []u8, api_id: []u8, ctx: i64, maxout: i64, cin: []u8, cout: []u8, reason: bool, tier: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"id\":\"");
+    sb_app(&sb, id);
+    sb_app(&sb, "\",\"name\":\"");
+    sb_app(&sb, name);
+    sb_app(&sb, "\",\"provider\":\"");
+    sb_app(&sb, provider);
+    sb_app(&sb, "\",\"apiModelId\":\"");
+    sb_app(&sb, api_id);
+    sb_app(&sb, "\",\"contextWindow\":");
+    sb_int(&sb, ctx);
+    sb_app(&sb, ",\"maxOutputTokens\":");
+    sb_int(&sb, maxout);
+    sb_app(&sb, ",\"costPerMInputTokens\":");
+    sb_app(&sb, cin);
+    sb_app(&sb, ",\"costPerMOutputTokens\":");
+    sb_app(&sb, cout);
+    sb_app(&sb, ",\"canReason\":");
+    if (reason) { sb_app(&sb, "true"); } else { sb_app(&sb, "false"); }
+    sb_app(&sb, ",\"tier\":\"");
+    sb_app(&sb, tier);
+    sb_app(&sb, "\"}");
+    return sb_slice(&sb);
+}
+
+fn provider_new(name: []u8, label: []u8, auth_mode: []u8, supports_key: bool, requires_base: bool, deployment: []u8, models_json: []u8, model_ids: []u8, default_model: []u8) *Provider {
+    return new(Provider{
+        .name = name,
+        .label = label,
+        .auth_mode = auth_mode,
+        .supports_api_key = supports_key,
+        .requires_base_url = requires_base,
+        .deployment = deployment,
+        .api_key = "",
+        .base_url = "",
+        .authenticated = false,
+        .models_json = models_json,
+        .model_ids_json = model_ids,
+        .default_model = default_model,
+    });
+}
+
+fn providers_init(app: *AppState) void {
+    let anth_models: []u8 = _zag_str_concat(_zag_str_concat("[",
+        model_entry("claude-sonnet-4-5", "Claude Sonnet 4.5", "anthropic", "claude-sonnet-4-5-20260213", 200000, 64000, "3", "15", true, "flagship")),
+        _zag_str_concat(",", _zag_str_concat(
+        model_entry("claude-opus-4-1", "Claude Opus 4.1", "anthropic", "claude-opus-4-1-20250805", 200000, 32000, "15", "75", true, "flagship"),
+        _zag_str_concat(",", _zag_str_concat(
+        model_entry("claude-haiku-4-5", "Claude Haiku 4.5", "anthropic", "claude-haiku-4-5-20251001", 200000, 64000, "1", "5", true, "fast"), "]")))));
+    push[*Provider](&app.*.providers, provider_new("anthropic", "Anthropic", "api_key_or_auth", true, false, "cloud",
+        anth_models, "[\"claude-sonnet-4-5\",\"claude-opus-4-1\",\"claude-haiku-4-5\"]", "claude-sonnet-4-5"));
+
+    let oai_models: []u8 = _zag_str_concat(_zag_str_concat("[",
+        model_entry("gpt-5.2", "GPT-5.2", "openai", "gpt-5.2", 272000, 128000, "1.25", "10", true, "flagship")),
+        _zag_str_concat(",", _zag_str_concat(
+        model_entry("gpt-5-mini", "GPT-5 mini", "openai", "gpt-5-mini", 272000, 128000, "0.25", "2", true, "fast"), "]")));
+    push[*Provider](&app.*.providers, provider_new("openai", "OpenAI", "api_key_or_auth", true, false, "cloud",
+        oai_models, "[\"gpt-5.2\",\"gpt-5-mini\"]", "gpt-5.2"));
+
+    let oll_models: []u8 = _zag_str_concat("[",
+        _zag_str_concat(model_entry("llama3.2", "Llama 3.2", "ollama", "llama3.2", 128000, 8192, "0", "0", false, "fast"), "]"));
+    push[*Provider](&app.*.providers, provider_new("ollama", "Ollama", "base_url_only", false, true, "local",
+        oll_models, "[\"llama3.2\"]", "llama3.2"));
+
+    let groq_models: []u8 = _zag_str_concat("[",
+        _zag_str_concat(model_entry("llama-3.3-70b-versatile", "Llama 3.3 70B", "groq", "llama-3.3-70b-versatile", 128000, 32768, "0.59", "0.79", false, "fast"), "]"));
+    push[*Provider](&app.*.providers, provider_new("groq", "Groq", "api_key_or_auth", true, false, "cloud",
+        groq_models, "[\"llama-3.3-70b-versatile\"]", "llama-3.3-70b-versatile"));
+
+    let xai_models: []u8 = _zag_str_concat("[",
+        _zag_str_concat(model_entry("grok-4", "Grok 4", "xai", "grok-4", 256000, 64000, "3", "15", true, "flagship"), "]"));
+    push[*Provider](&app.*.providers, provider_new("xai", "xAI", "api_key_or_auth", true, false, "cloud",
+        xai_models, "[\"grok-4\"]", "grok-4"));
+
+    let ds_models: []u8 = _zag_str_concat("[",
+        _zag_str_concat(model_entry("deepseek-chat", "DeepSeek V3", "deepseek", "deepseek-chat", 128000, 8192, "0.27", "1.1", false, "cheap"), "]"));
+    push[*Provider](&app.*.providers, provider_new("deepseek", "DeepSeek", "api_key_or_auth", true, false, "cloud",
+        ds_models, "[\"deepseek-chat\"]", "deepseek-chat"));
+
+    let demo_models: []u8 = _zag_str_concat("[",
+        _zag_str_concat(model_entry("kory-demo", "Kory Demo", "demo", "kory-demo", 128000, 8192, "0", "0", false, "fast"), "]"));
+    push[*Provider](&app.*.providers, provider_new("demo", "Demo (built-in)", "api_key_or_auth", true, false, "local",
+        demo_models, "[\"kory-demo\"]", "kory-demo"));
+}
+
+fn provider_find(app: *AppState, name: []u8) ?*Provider {
+    let i: i32 = 0;
+    while (i < app.*.providers.len) {
+        let p: *Provider = get[*Provider](app.*.providers, i);
+        if (str_eq(p.*.name, name)) { return p; }
+        i = i + 1;
+    }
+    return null;
+}
+
+// First authenticated provider, if any.
+fn provider_first_auth(app: *AppState) ?*Provider {
+    let i: i32 = 0;
+    while (i < app.*.providers.len) {
+        let p: *Provider = get[*Provider](app.*.providers, i);
+        if (p.*.authenticated) { return p; }
+        i = i + 1;
+    }
+    return null;
+}
+
+// One provider status object (API shape).
+fn provider_json(p: *Provider, sb: *StrBuf) void {
+    sb_app(sb, "{\"name\":\"");
+    sb_app(sb, p.*.name);
+    sb_app(sb, "\",\"enabled\":");
+    if (p.*.authenticated) { sb_app(sb, "true"); } else { sb_app(sb, "false"); }
+    sb_app(sb, ",\"authenticated\":");
+    if (p.*.authenticated) { sb_app(sb, "true"); } else { sb_app(sb, "false"); }
+    sb_app(sb, ",\"authSource\":");
+    if (p.*.authenticated) {
+        if (p.*.requires_base_url) { sb_app(sb, "\"Base URL\""); } else { sb_app(sb, "\"API Key\""); }
+    } else {
+        sb_app(sb, "null");
+    }
+    sb_app(sb, ",\"models\":");
+    if (p.*.authenticated) { sb_app(sb, p.*.model_ids_json); } else { sb_app(sb, "[]"); }
+    sb_app(sb, ",\"allAvailableModels\":");
+    sb_app(sb, p.*.models_json);
+    sb_app(sb, ",\"selectedModels\":[],\"hideModelSelector\":false,\"authMode\":\"");
+    sb_app(sb, p.*.auth_mode);
+    sb_app(sb, "\",\"supportsApiKey\":");
+    if (p.*.supports_api_key) { sb_app(sb, "true"); } else { sb_app(sb, "false"); }
+    sb_app(sb, ",\"supportsAuthToken\":false,\"requiresBaseUrl\":");
+    if (p.*.requires_base_url) { sb_app(sb, "true"); } else { sb_app(sb, "false"); }
+    sb_app(sb, ",\"circuitOpen\":false,\"label\":\"");
+    sb_app(sb, p.*.label);
+    sb_app(sb, "\",\"deployment\":\"");
+    sb_app(sb, p.*.deployment);
+    if (p.*.requires_base_url) {
+        sb_app(sb, "\",\"baseUrlPlaceholder\":\"http://localhost:11434");
+    }
+    sb_app(sb, "\"}");
+}
+
+fn providers_json(app: *AppState) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '[' as u8);
+    let i: i32 = 0;
+    while (i < app.*.providers.len) {
+        if (i > 0) { sb_ch(&sb, ',' as u8); }
+        provider_json(get[*Provider](app.*.providers, i), &sb);
+        i = i + 1;
+    }
+    sb_ch(&sb, ']' as u8);
+    return sb_slice(&sb);
+}
+
+// ── credentials persistence ───────────────────────────────────────────────────
+
+fn creds_path(app: *AppState) []u8 {
+    return _zag_str_concat(app.*.data_dir, "/credentials.json");
+}
+
+// Env var carrying each provider's key (original precedence: file → env).
+fn provider_env_var(name: []u8) []u8 {
+    if (str_eq(name, "anthropic")) { return "ANTHROPIC_API_KEY"; }
+    if (str_eq(name, "openai")) { return "OPENAI_API_KEY"; }
+    if (str_eq(name, "groq")) { return "GROQ_API_KEY"; }
+    if (str_eq(name, "xai")) { return "XAI_API_KEY"; }
+    if (str_eq(name, "deepseek")) { return "DEEPSEEK_API_KEY"; }
+    if (str_eq(name, "ollama")) { return "OLLAMA_BASE_URL"; }
+    return "";
+}
+
+fn creds_load(app: *AppState) void {
+    let content: []u8 = util_read_or_empty(creds_path(app));
+    let root: ?*JNode = json_parse(content);
+    let i: i32 = 0;
+    while (i < app.*.providers.len) {
+        let p: *Provider = get[*Provider](app.*.providers, i);
+        let entry: ?*JNode = json_get(root, p.*.name);
+        if (entry) |e| {
+            let key: []u8 = json_str(json_get(e, "apiKey"));
+            let base: []u8 = json_str(json_get(e, "baseUrl"));
+            if (key.len > 0) { p.*.api_key = key; }
+            if (base.len > 0) { p.*.base_url = base; }
+        }
+        // env fallback
+        let evar: []u8 = provider_env_var(p.*.name);
+        if (evar.len > 0) {
+            let ev: []u8 = _zag_getenv(evar);
+            if (ev.len > 0) {
+                if (p.*.requires_base_url) {
+                    if (p.*.base_url.len == 0) { p.*.base_url = ev; }
+                } else if (p.*.api_key.len == 0) {
+                    p.*.api_key = ev;
+                }
+            }
+        }
+        if (p.*.requires_base_url) {
+            p.*.authenticated = p.*.base_url.len > 0;
+        } else {
+            p.*.authenticated = p.*.api_key.len > 0;
+        }
+        i = i + 1;
+    }
+}
+
+fn creds_save(app: *AppState) void {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '{' as u8);
+    let first: bool = true;
+    let i: i32 = 0;
+    while (i < app.*.providers.len) {
+        let p: *Provider = get[*Provider](app.*.providers, i);
+        if (p.*.api_key.len > 0 || p.*.base_url.len > 0) {
+            if (!first) { sb_ch(&sb, ',' as u8); }
+            first = false;
+            sb_ch(&sb, '"' as u8);
+            sb_app(&sb, p.*.name);
+            sb_app(&sb, "\":{");
+            let inner_first: bool = true;
+            if (p.*.api_key.len > 0) {
+                sb_app(&sb, "\"apiKey\":\"");
+                sb_app(&sb, str_escape_json(p.*.api_key));
+                sb_ch(&sb, '"' as u8);
+                inner_first = false;
+            }
+            if (p.*.base_url.len > 0) {
+                if (!inner_first) { sb_ch(&sb, ',' as u8); }
+                sb_app(&sb, "\"baseUrl\":\"");
+                sb_app(&sb, str_escape_json(p.*.base_url));
+                sb_ch(&sb, '"' as u8);
+            }
+            sb_ch(&sb, '}' as u8);
+        }
+        i = i + 1;
+    }
+    sb_ch(&sb, '}' as u8);
+    util_write_atomic(creds_path(app), sb_slice(&sb));
+    util_chmod(creds_path(app), 384);   // 0600
+}
+
+// ── auth tokens ───────────────────────────────────────────────────────────────
+
+fn auth_sig_for(app: *AppState, sid: []u8) []u8 {
+    return sha1_hex(_zag_str_concat(app.*.boot_secret, sid));
+}
+
+// Validate "Bearer <sid>:<sig>"; loopback single-user model.
+fn auth_check(app: *AppState, header_val: []u8) bool {
+    let v: []u8 = str_trim(header_val);
+    if (!str_starts_with(v, "Bearer ")) { return false; }
+    let tok: []u8 = str_trim(v[7..v.len]);
+    let sp: SplitResult = str_split_first(tok, ':');
+    if (!sp.found) { return false; }
+    return str_eq(sp.tail, auth_sig_for(app, sp.head));
+}
+
+// ── WS event fanout ───────────────────────────────────────────────────────────
+
+// Build the server→client envelope. payload must be a JSON object string.
+fn ws_envelope(etype: []u8, payload: []u8, session_id: []u8, agent_id: []u8) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"type\":\"");
+    sb_app(&sb, etype);
+    sb_app(&sb, "\",\"payload\":");
+    if (payload.len == 0) { sb_app(&sb, "{}"); } else { sb_app(&sb, payload); }
+    sb_app(&sb, ",\"timestamp\":");
+    sb_int(&sb, util_now_ms());
+    if (session_id.len > 0) {
+        sb_app(&sb, ",\"sessionId\":\"");
+        sb_app(&sb, session_id);
+        sb_ch(&sb, '"' as u8);
+    }
+    if (agent_id.len > 0) {
+        sb_app(&sb, ",\"agentId\":\"");
+        sb_app(&sb, agent_id);
+        sb_ch(&sb, '"' as u8);
+    }
+    sb_ch(&sb, '}' as u8);
+    return sb_slice(&sb);
+}
+
+fn conn_is_subscribed(conn: *Conn, session_id: []u8) bool {
+    let i: i32 = 0;
+    while (i < conn.*.ws_subs.len) {
+        if (str_eq(get[[]u8](conn.*.ws_subs, i), session_id)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Broadcast an event. session_id "" ⇒ all sockets; else only subscribed ones.
+fn ws_emit(srv: *HttpServer, etype: []u8, payload: []u8, session_id: []u8, agent_id: []u8) void {
+    let frame: []u8 = ws_envelope(etype, payload, session_id, agent_id);
+    let fd: i32 = 0;
+    while (fd < HTTP_MAXFD()) {
+        let raw: i64 = srv.*.conns[fd];
+        if (raw != 0) {
+            let conn: *Conn = raw as *Conn;
+            if (conn.*.alive && conn.*.kind == 1) {
+                if (session_id.len == 0 || conn_is_subscribed(conn, session_id)) {
+                    ws_send_text(srv, conn, frame);
+                }
+            }
+        }
+        fd = fd + 1;
+    }
+}

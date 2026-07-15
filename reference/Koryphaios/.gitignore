@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+desktop/src-tauri/embedded-backend/
+.bun/
+
+# Build output
+build/
+.svelte-kit/
+desktop/src-tauri/target/
+
+# Data & secrets
+.koryphaios/
+data/*.db
+data/*.db-*
+*.db
+*.db-wal
+*.db-shm
+
+# Local / scratch
+typecheck_output*.txt
+*.AppImage
+test-results/
+compat-hash.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+*.log.*
+backend/server*.log
+frontend/frontend*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+
+# Reference (excluded from repo)
+opencode-reference/
+
+# Koryphaios AI worktrees
+.trees/
+.claude/worktrees/
+.keys
+desktop/src-tauri/sidecar/
+koryphaios.json

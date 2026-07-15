@@ -1,0 +1,15 @@
+@import("../zagstd/rt.zag")
+fn cap(cmd: []u8) []u8 { return _zag_exec_capture(_zag_str_concat("( ", _zag_str_concat(cmd, " ) 2>&1"))); }
+fn t(label: []u8, cmd: []u8) void {
+    let r: []u8 = cap(cmd);
+    _zag_print(label); _zag_print(" len="); _zag_println(_zag_i64_to_str(r.len as i64));
+}
+fn main() i32 {
+    t("find-head-only ", "find . -type f | head -50");
+    t("find-grep-only ", "find . -type f | grep zag");
+    t("find-head-grep ", "find . -type f | head -50 | grep zag");
+    t("find-head-cat  ", "find . -type f | head -50 | cat");
+    t("yes-head-grep  ", "yes aaa | head -50 | grep a");
+    t("sigpipe-probe  ", "trap '' PIPE; find . -type f | head -50 | grep zag");
+    return 0;
+}

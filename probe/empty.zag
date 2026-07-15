@@ -1,0 +1,11 @@
+@import("../zagstd/rt.zag")
+
+fn cb_empty(x: i32) void { }
+fn cb_body(x: i32) void { let y: i32 = x; }
+
+fn main() i32 {
+    cb_empty(1);
+    cb_body(2);
+    _zag_println("ok");
+    return 0;
+}

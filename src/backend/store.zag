@@ -1,0 +1,265 @@
+// backend/store.zag — persistence for sessions + messages.
+//
+// Replaces bun:sqlite with a Zag-native JSON file store:
+//   <data>/sessions.json          — array of Session objects (API shape)
+//   <data>/messages/<sid>.json    — array of Message objects (API shape)
+// Files hold exactly the wire format (epoch-ms timestamps), so reads are
+// passthrough and the store is human-inspectable.
+
+@import("util.zag")
+
+struct Session {
+    id: []u8,
+    title: []u8,
+    parent_id: []u8,          // "" = null
+    working_dir: []u8,
+    message_count: i64,
+    tokens_in: i64,
+    tokens_out: i64,
+    total_cost_u: i64,        // micro-dollars; wire = /1e6
+    version: i64,
+    created_at: i64,
+    updated_at: i64,
+}
+
+struct Store {
+    dir: []u8,                // data root, e.g. "data"
+    sessions: ArrayList[*Session],
+}
+
+// ── serialization ─────────────────────────────────────────────────────────────
+
+fn session_json(s: *Session, sb: *StrBuf) void {
+    sb_app(sb, "{\"id\":\"");
+    sb_app(sb, s.*.id);
+    sb_app(sb, "\",\"title\":\"");
+    sb_app(sb, str_escape_json(s.*.title));
+    sb_app(sb, "\",\"parentSessionId\":");
+    if (s.*.parent_id.len == 0) {
+        sb_app(sb, "null");
+    } else {
+        sb_ch(sb, '"' as u8);
+        sb_app(sb, s.*.parent_id);
+        sb_ch(sb, '"' as u8);
+    }
+    sb_app(sb, ",\"workingDirectory\":\"");
+    sb_app(sb, str_escape_json(s.*.working_dir));
+    sb_app(sb, "\",\"messageCount\":");
+    sb_int(sb, s.*.message_count);
+    sb_app(sb, ",\"totalTokensIn\":");
+    sb_int(sb, s.*.tokens_in);
+    sb_app(sb, ",\"totalTokensOut\":");
+    sb_int(sb, s.*.tokens_out);
+    sb_app(sb, ",\"totalCost\":");
+    sb_app(sb, util_f64_str((s.*.total_cost_u as f64) / 1000000.0));
+    sb_app(sb, ",\"version\":");
+    sb_int(sb, s.*.version);
+    sb_app(sb, ",\"createdAt\":");
+    sb_int(sb, s.*.created_at);
+    sb_app(sb, ",\"updatedAt\":");
+    sb_int(sb, s.*.updated_at);
+    sb_ch(sb, '}' as u8);
+}
+
+fn sessions_json(st: *Store) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_ch(&sb, '[' as u8);
+    let i: i32 = 0;
+    while (i < st.*.sessions.len) {
+        if (i > 0) { sb_ch(&sb, ',' as u8); }
+        session_json(get[*Session](st.*.sessions, i), &sb);
+        i = i + 1;
+    }
+    sb_ch(&sb, ']' as u8);
+    return sb_slice(&sb);
+}
+
+fn session_from_json(n: ?*JNode) ?*Session {
+    if (n) |node| {
+        let id: []u8 = json_str(json_get(node, "id"));
+        if (id.len == 0) { return null; }
+        let title: []u8 = json_str(json_get(node, "title"));
+        if (title.len == 0) { title = "New Session"; }
+        let version: i64 = json_int(json_get(node, "version"));
+        if (version < 1) { version = 1; }
+        let cost: f64 = json_float(json_get(node, "totalCost"));
+        return new(Session{
+            .id = id,
+            .title = title,
+            .parent_id = json_str(json_get(node, "parentSessionId")),
+            .working_dir = json_str(json_get(node, "workingDirectory")),
+            .message_count = json_int(json_get(node, "messageCount")),
+            .tokens_in = json_int(json_get(node, "totalTokensIn")),
+            .tokens_out = json_int(json_get(node, "totalTokensOut")),
+            .total_cost_u = (cost * 1000000.0) as i64,
+            .version = version,
+            .created_at = json_int(json_get(node, "createdAt")),
+            .updated_at = json_int(json_get(node, "updatedAt")),
+        });
+    }
+    return null;
+}
+
+// ── store lifecycle ───────────────────────────────────────────────────────────
+
+fn store_sessions_path(st: *Store) []u8 {
+    return _zag_str_concat(st.*.dir, "/sessions.json");
+}
+
+fn store_messages_path(st: *Store, sid: []u8) []u8 {
+    return _zag_str_concat(_zag_str_concat(st.*.dir, "/messages/"), _zag_str_concat(sid, ".json"));
+}
+
+fn store_open(dir: []u8) *Store {
+    util_mkdir(dir);
+    util_mkdir(_zag_str_concat(dir, "/messages"));
+    let st: *Store = new(Store{ .dir = dir, .sessions = make[*Session](8) });
+    let content: []u8 = util_read_or_empty(store_sessions_path(st));
+    if (content.len > 0) {
+        let root: ?*JNode = json_parse(content);
+        let count: i32 = json_arr_len(root);
+        let i: i32 = 0;
+        while (i < count) {
+            let maybe: ?*Session = session_from_json(json_arr_at(root, i));
+            if (maybe) |sess| {
+                push[*Session](&st.*.sessions, sess);
+            }
+            i = i + 1;
+        }
+    }
+    return st;
+}
+
+fn store_save(st: *Store) void {
+    util_write_atomic(store_sessions_path(st), sessions_json(st));
+}
+
+// ── session ops ───────────────────────────────────────────────────────────────
+
+fn store_find(st: *Store, id: []u8) ?*Session {
+    let i: i32 = 0;
+    while (i < st.*.sessions.len) {
+        let s: *Session = get[*Session](st.*.sessions, i);
+        if (str_eq(s.*.id, id)) { return s; }
+        i = i + 1;
+    }
+    return null;
+}
+
+fn store_create_session(st: *Store, title: []u8, working_dir: []u8) *Session {
+    let now: i64 = util_now_ms();
+    let s: *Session = new(Session{
+        .id = util_nanoid(12),
+        .title = _zag_strdup(title),
+        .parent_id = "",
+        .working_dir = _zag_strdup(working_dir),
+        .message_count = 0,
+        .tokens_in = 0,
+        .tokens_out = 0,
+        .total_cost_u = 0,
+        .version = 1,
+        .created_at = now,
+        .updated_at = now,
+    });
+    push[*Session](&st.*.sessions, s);
+    store_save(st);
+    // seed the messages file
+    util_write_atomic(store_messages_path(st, s.*.id), "[]");
+    return s;
+}
+
+fn store_delete_session(st: *Store, id: []u8) bool {
+    let i: i32 = 0;
+    let found: i32 = 0 - 1;
+    while (i < st.*.sessions.len) {
+        let s: *Session = get[*Session](st.*.sessions, i);
+        if (str_eq(s.*.id, id)) { found = i; }
+        i = i + 1;
+    }
+    if (found < 0) { return false; }
+    // remove by shifting
+    let j: i32 = found;
+    while (j + 1 < st.*.sessions.len) {
+        set[*Session](&st.*.sessions, j, get[*Session](st.*.sessions, j + 1));
+        j = j + 1;
+    }
+    st.*.sessions.len = st.*.sessions.len - 1;
+    store_save(st);
+    util_unlink(store_messages_path(st, id));
+    return true;
+}
+
+fn store_touch(st: *Store, s: *Session) void {
+    s.*.updated_at = util_now_ms();
+    s.*.version = s.*.version + 1;
+    store_save(st);
+}
+
+// ── message ops ───────────────────────────────────────────────────────────────
+
+// Build one Message JSON object (API wire shape).
+fn message_json(id: []u8, sid: []u8, role: []u8, text: []u8, model: []u8, provider: []u8, tokens_in: i64, tokens_out: i64, cost_u: i64, created_at: i64) []u8 {
+    let sb: StrBuf = sb_make();
+    sb_app(&sb, "{\"id\":\"");
+    sb_app(&sb, id);
+    sb_app(&sb, "\",\"sessionId\":\"");
+    sb_app(&sb, sid);
+    sb_app(&sb, "\",\"role\":\"");
+    sb_app(&sb, role);
+    sb_app(&sb, "\",\"content\":[{\"type\":\"text\",\"text\":\"");
+    sb_app(&sb, str_escape_json(text));
+    sb_app(&sb, "\"}],\"model\":");
+    if (model.len == 0) { sb_app(&sb, "null"); }
+    else {
+        sb_ch(&sb, '"' as u8);
+        sb_app(&sb, model);
+        sb_ch(&sb, '"' as u8);
+    }
+    sb_app(&sb, ",\"provider\":");
+    if (provider.len == 0) { sb_app(&sb, "null"); }
+    else {
+        sb_ch(&sb, '"' as u8);
+        sb_app(&sb, provider);
+        sb_ch(&sb, '"' as u8);
+    }
+    sb_app(&sb, ",\"tokensIn\":");
+    sb_int(&sb, tokens_in);
+    sb_app(&sb, ",\"tokensOut\":");
+    sb_int(&sb, tokens_out);
+    sb_app(&sb, ",\"cost\":");
+    sb_app(&sb, util_f64_str((cost_u as f64) / 1000000.0));
+    sb_app(&sb, ",\"variantGroupId\":null,\"variantIndex\":0,\"createdAt\":");
+    sb_int(&sb, created_at);
+    sb_ch(&sb, '}' as u8);
+    return sb_slice(&sb);
+}
+
+// Raw messages array for a session (exactly what the API returns).
+fn store_messages_raw(st: *Store, sid: []u8) []u8 {
+    let content: []u8 = util_read_or_empty(store_messages_path(st, sid));
+    if (content.len == 0) { return "[]"; }
+    return content;
+}
+
+// Append a serialized message object to the session's array file.
+fn store_append_message(st: *Store, sid: []u8, msg_obj: []u8) void {
+    let path: []u8 = store_messages_path(st, sid);
+    let cur: []u8 = util_read_or_empty(path);
+    let sb: StrBuf = sb_make();
+    let trimmed: []u8 = str_trim(cur);
+    if (trimmed.len < 2) {
+        sb_app(&sb, "[");
+        sb_app(&sb, msg_obj);
+        sb_app(&sb, "]");
+    } else if (str_eq(trimmed, "[]")) {
+        sb_app(&sb, "[");
+        sb_app(&sb, msg_obj);
+        sb_app(&sb, "]");
+    } else {
+        sb_app(&sb, trimmed[0..trimmed.len - 1]);
+        sb_app(&sb, ",");
+        sb_app(&sb, msg_obj);
+        sb_app(&sb, "]");
+    }
+    util_write_atomic(path, sb_slice(&sb));
+}

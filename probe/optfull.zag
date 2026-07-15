@@ -1,0 +1,28 @@
+@import("../zagstd/rt.zag")
+
+fn maybe(x: i32) ?[]u8 {
+    if (x > 0) { return "hello world"; }
+    return null;
+}
+fn maybe_null() ?[]u8 { return null; }
+
+fn main() i32 {
+    let o: ?[]u8 = maybe(1);
+    if (o) |v| {
+        // index several bytes directly on the captured value
+        _zag_print("bytes:");
+        let i: i32 = 0;
+        while (i < v.len) { _zag_print(" "); _zag_print(_zag_i64_to_str((v[i] as i32) as i64)); i = i + 1; }
+        _zag_println("");
+        // slice the captured value directly
+        let sub: []u8 = v[0..5];
+        _zag_println(sub);              // "hello"
+        let sub2: []u8 = v[6..v.len];
+        _zag_println(sub2);             // "world"
+        // index in a condition
+        if (v[0] == 104) { _zag_println("v[0]==h OK"); } else { _zag_println("v[0] WRONG"); }
+    }
+    // null path must not enter
+    if (maybe_null()) |v2| { _zag_println("BUG: entered null"); } else { _zag_println("null path OK"); }
+    return 0;
+}

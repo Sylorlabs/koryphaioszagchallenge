@@ -1,0 +1,49 @@
+@import("../zagstd/rt.zag")
+
+// Linux x86-64 syscalls
+// socket=41 bind=49 listen=50 accept=43 setsockopt=54 read=0 write=1 close=3
+
+fn main() i32 {
+    let fd: i64 = _zag_raw_syscall(41, 2, 1, 0, 0, 0, 0);
+    _zag_println(_zag_str_concat("socket fd=", _zag_i64_to_str(fd)));
+    if (fd < 0) { return 1; }
+
+    // int one = 1 for SO_REUSEADDR
+    let onep: *i8 = _zag_malloc(4);
+    onep[0] = 1 as i8; onep[1] = 0 as i8; onep[2] = 0 as i8; onep[3] = 0 as i8;
+    let rc: i64 = _zag_raw_syscall(54, fd, 1, 2, onep as i64, 4, 0);
+    _zag_println(_zag_str_concat("setsockopt=", _zag_i64_to_str(rc)));
+
+    // sockaddr_in: family=2 LE, port 18080 BE (70,160), addr 0
+    let sa: *i8 = _zag_malloc(16);
+    let i: i32 = 0;
+    while (i < 16) { sa[i] = 0 as i8; i = i + 1; }
+    sa[0] = 2 as i8;
+    sa[2] = 70 as i8;
+    sa[3] = 160 as i8;   // may need cast handling for >127
+    let brc: i64 = _zag_raw_syscall(49, fd, sa as i64, 16, 0, 0, 0);
+    _zag_println(_zag_str_concat("bind=", _zag_i64_to_str(brc)));
+    if (brc < 0) { return 2; }
+
+    let lrc: i64 = _zag_raw_syscall(50, fd, 16, 0, 0, 0, 0);
+    _zag_println(_zag_str_concat("listen=", _zag_i64_to_str(lrc)));
+    _zag_println("waiting for one connection on 18080...");
+
+    let cfd: i64 = _zag_raw_syscall(43, fd, 0, 0, 0, 0, 0);
+    _zag_println(_zag_str_concat("accept fd=", _zag_i64_to_str(cfd)));
+    if (cfd < 0) { return 3; }
+
+    let buf: *i8 = _zag_malloc(4096);
+    let n: i64 = _zag_raw_syscall(0, cfd, buf as i64, 4096, 0, 0, 0);
+    _zag_println(_zag_str_concat("read n=", _zag_i64_to_str(n)));
+    if (n > 0) {
+        let req: []u8 = buf[0..(n as i32)];
+        _zag_println(req);
+    }
+    let resp: []u8 = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello from Zag";
+    let wrc: i64 = _zag_raw_syscall(1, cfd, _zag_slice_ptr(resp) as i64, resp.len as i64, 0, 0, 0);
+    _zag_println(_zag_str_concat("write=", _zag_i64_to_str(wrc)));
+    _zag_raw_syscall(3, cfd, 0, 0, 0, 0, 0);
+    _zag_raw_syscall(3, fd, 0, 0, 0, 0, 0);
+    return 0;
+}

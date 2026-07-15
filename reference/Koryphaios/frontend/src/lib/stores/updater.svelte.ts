@@ -1,0 +1,347 @@
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-shell';
+import { listen } from '@tauri-apps/api/event';
+
+export interface UpdateInfo {
+  available: boolean;
+  version: string | null;
+  notes: string | null;
+  pubDate: string | null;
+}
+
+export interface UpdateState {
+  checking: boolean;
+  updateAvailable: boolean;
+  updateInfo: UpdateInfo | null;
+  lastChecked: Date | null;
+  error: string | null;
+  downloaded: boolean;
+  downloadProgress: number;
+}
+
+// Update check interval: 30 minutes in milliseconds
+const UPDATE_CHECK_INTERVAL = 30 * 60 * 1000;
+
+// Create updater store using Svelte 5 runes
+function createUpdaterStore() {
+  // State
+  let checking = $state(false);
+  let updateAvailable = $state(false);
+  let updateInfo = $state<UpdateInfo | null>(null);
+  let lastChecked = $state<Date | null>(null);
+  let error = $state<string | null>(null);
+  let downloaded = $state(false);
+  let downloadProgress = $state(0);
+  let showUpdateBanner = $state(false);
+  let dialogOpen = $state(false);
+
+  // Private
+  let checkInterval: ReturnType<typeof setInterval> | null = null;
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  let updateDownloaded = false;
+  // Running total of bytes downloaded, so we can compute a percentage from
+  // the incremental chunk_length events the Rust side emits.
+  let downloadedBytes = 0;
+
+  async function setupEventListeners() {
+    if (!isTauri) return;
+
+    try {
+      // Listen for download progress events emitted by install_update's
+      // on_chunk callback. payload = { chunkLength, contentLength }.
+      await listen<{ chunkLength: number; contentLength: number | null }>(
+        'tauri://update-download-progress',
+        (event) => {
+          const payload = event.payload;
+          if (!payload) return;
+          downloadedBytes += payload.chunkLength;
+          const total = payload.contentLength;
+          if (total && total > 0) {
+            downloadProgress = Math.min(100, Math.round((downloadedBytes / total) * 100));
+          } else {
+            // No content-length — show bytes downloaded in MB as a fallback.
+            downloadProgress = Math.round(downloadedBytes / (1024 * 1024));
+          }
+        },
+      );
+    } catch (e) {
+      // Event listeners might not be available in all Tauri versions
+    }
+  }
+
+  /**
+   * Check for updates
+   * @param silent - If true, don't show error toasts for failed checks
+   */
+  async function checkForUpdates(silent = false): Promise<UpdateInfo | null> {
+    if (!isTauri) {
+      return null;
+    }
+
+    checking = true;
+    error = null;
+
+    try {
+      const result = await invoke<{
+        available: boolean;
+        version: string | null;
+        notes: string | null;
+        pub_date: string | null;
+      }>('check_for_updates');
+
+      const info: UpdateInfo = {
+        available: result.available,
+        version: result.version,
+        notes: result.notes,
+        pubDate: result.pub_date,
+      };
+
+      updateInfo = info;
+      updateAvailable = result.available;
+      lastChecked = new Date();
+
+      // If update is available, show the banner.
+      // NOTE: we do NOT auto-download here — the previous implementation called
+      // downloadUpdate() which was a no-op (it just set downloadProgress = 0),
+      // giving the false impression that the update was pre-downloaded. The
+      // real download happens during installUpdateAndRestart(), with live
+      // progress events wired through to the UI.
+      if (result.available) {
+        showUpdateBanner = true;
+        downloadedBytes = 0;
+        downloadProgress = 0;
+      }
+
+      return info;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      error = errorMsg;
+
+      if (!silent) {
+        console.error('Failed to check for updates:', err);
+      }
+
+      return null;
+    } finally {
+      checking = false;
+    }
+  }
+
+  /**
+   * Install the available update and restart.
+   * Resets progress state, invokes the Rust install_update command (which
+   * downloads + verifies + installs + restarts), and surfaces errors so the
+   * caller can reset its UI state.
+   */
+  async function installUpdateAndRestart(): Promise<boolean> {
+    if (!isTauri || !updateAvailable) {
+      return false;
+    }
+
+    // Reset progress tracking for this install attempt.
+    downloadedBytes = 0;
+    downloadProgress = 0;
+    error = null;
+
+    try {
+      await invoke('install_update');
+      // On Linux/macOS the app restarts via request_restart() inside the
+      // Rust command, so this line rarely executes. On Windows the NSIS/MSI
+      // installer handles relaunch. Return true either way.
+      return true;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      error = errorMsg;
+      console.error('Failed to install update:', err);
+      // Reset progress so the UI doesn't show a stale percentage after failure.
+      downloadProgress = 0;
+      downloadedBytes = 0;
+      return false;
+    }
+  }
+
+  /** Reset the install/error state so the UI can recover after a failure. */
+  function resetInstallState(): void {
+    error = null;
+    downloadProgress = 0;
+    downloadedBytes = 0;
+  }
+
+  /**
+   * Dismiss the update notification
+   */
+  function dismissUpdate(): void {
+    showUpdateBanner = false;
+  }
+
+  /**
+   * Show update banner again
+   */
+  function showUpdateNotification(): void {
+    if (updateAvailable) {
+      showUpdateBanner = true;
+    }
+  }
+
+  /**
+   * Start periodic update checks (every 30 minutes)
+   */
+  function startPeriodicChecks(): void {
+    if (checkInterval) {
+      clearInterval(checkInterval);
+    }
+
+    checkInterval = setInterval(() => {
+      // Only check if we haven't shown an update yet
+      if (!updateAvailable) {
+        checkForUpdates(true);
+      }
+    }, UPDATE_CHECK_INTERVAL);
+  }
+
+  /**
+   * Stop periodic update checks
+   */
+  function stopPeriodicChecks(): void {
+    if (checkInterval) {
+      clearInterval(checkInterval);
+      checkInterval = null;
+    }
+  }
+
+  /**
+   * Open the changelog page in browser
+   */
+  async function openChangelog(): Promise<void> {
+    await open('https://koryphaios.com/changelog');
+  }
+
+  /**
+   * Get formatted last checked time
+   */
+  function getLastCheckedText(): string {
+    if (!lastChecked) {
+      return 'Never';
+    }
+
+    const now = new Date();
+    const diff = now.getTime() - lastChecked.getTime();
+
+    // Less than a minute
+    if (diff < 60000) {
+      return 'Just now';
+    }
+
+    // Less than an hour
+    if (diff < 3600000) {
+      const minutes = Math.floor(diff / 60000);
+      return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+    }
+
+    // Less than a day
+    if (diff < 86400000) {
+      const hours = Math.floor(diff / 3600000);
+      return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    }
+
+    return lastChecked.toLocaleDateString();
+  }
+
+  /**
+   * Get formatted update message
+   */
+  function getUpdateMessage(): string {
+    if (!updateInfo?.version) {
+      return 'A new version is available!';
+    }
+    return `Update to v${updateInfo.version} is ready`;
+  }
+
+  // Initialize
+  if (isTauri) {
+    // Check immediately on startup
+    checkForUpdates(true);
+
+    // Set up periodic checks every 30 minutes
+    startPeriodicChecks();
+
+    // Listen for update download progress
+    setupEventListeners();
+  }
+
+  function openDialog(): void {
+    dialogOpen = true;
+    showUpdateBanner = false;
+  }
+  function closeDialog(): void {
+    dialogOpen = false;
+  }
+
+  /** Release notes → clean, readable sections. Strips the CHANGES_JSON HTML
+   *  comment, the download boilerplate, and horizontal rules. */
+  function getCleanNotes(): string {
+    const raw = updateInfo?.notes ?? '';
+    if (!raw.trim()) return '';
+    return raw
+      .replace(/<!--[\s\S]*?-->/g, '') // CHANGES_JSON block
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        if (!t) return false;
+        if (t === '---') return false;
+        if (/download below or update automatically/i.test(t)) return false;
+        return true;
+      })
+      .join('\n')
+      .trim();
+  }
+
+  return {
+    // State getters
+    get dialogOpen() {
+      return dialogOpen;
+    },
+    get checking() {
+      return checking;
+    },
+    get updateAvailable() {
+      return updateAvailable;
+    },
+    get updateInfo() {
+      return updateInfo;
+    },
+    get lastChecked() {
+      return lastChecked;
+    },
+    get error() {
+      return error;
+    },
+    get downloaded() {
+      return downloaded;
+    },
+    get downloadProgress() {
+      return downloadProgress;
+    },
+    get showUpdateBanner() {
+      return showUpdateBanner;
+    },
+
+    // Methods
+    checkForUpdates,
+    installUpdateAndRestart,
+    dismissUpdate,
+    showUpdateNotification,
+    startPeriodicChecks,
+    stopPeriodicChecks,
+    openChangelog,
+    openDialog,
+    closeDialog,
+    getCleanNotes,
+    getLastCheckedText,
+    getUpdateMessage,
+    resetInstallState,
+  };
+}
+
+// Export singleton instance
+export const updater = createUpdaterStore();

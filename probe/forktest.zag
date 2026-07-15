@@ -1,0 +1,42 @@
+@import("../zagstd/rt.zag")
+
+// util_cpath equivalent
+fn cpath(s: []u8) *i8 {
+    let raw: *i8 = _zag_malloc(s.len + 1);
+    _zag_memcpy(raw, _zag_slice_ptr(s), s.len);
+    raw[s.len] = 0 as i8;
+    return raw;
+}
+
+fn main() i32 {
+    let out_c: *i8 = cpath("/tmp/claude-1000/forkspawn.out");
+    let sh_c: *i8 = cpath("/bin/sh");
+    let dashc: *i8 = cpath("-c");
+    let cmd_c: *i8 = cpath("echo NATIVE-FORK-OK; echo line2; whoami");
+    let devnull: *i8 = cpath("/dev/null");
+    let argv: *i64 = _zag_malloc(4 * 8) as *i64;
+    argv[0] = sh_c as i64; argv[1] = dashc as i64; argv[2] = cmd_c as i64; argv[3] = 0;
+    // minimal envp with PATH
+    let pathval: []u8 = _zag_getenv("PATH");
+    let patentry: *i8 = cpath(_zag_str_concat("PATH=", pathval));
+    let envp: *i64 = _zag_malloc(2 * 8) as *i64;
+    envp[0] = patentry as i64; envp[1] = 0;
+
+    let pid: i64 = _zag_raw_syscall(57, 0, 0, 0, 0, 0, 0);   // fork
+    if (pid == 0) {
+        _zag_raw_syscall(112, 0, 0, 0, 0, 0, 0);             // setsid
+        let ofd: i64 = _zag_raw_syscall(2, out_c as i64, 577, 420, 0, 0, 0);  // open O_WRONLY|O_CREAT|O_TRUNC
+        _zag_raw_syscall(33, ofd, 1, 0, 0, 0, 0);            // dup2 -> stdout
+        _zag_raw_syscall(33, ofd, 2, 0, 0, 0, 0);            // dup2 -> stderr
+        let nfd: i64 = _zag_raw_syscall(2, devnull as i64, 0, 0, 0, 0, 0);   // open /dev/null
+        _zag_raw_syscall(33, nfd, 0, 0, 0, 0, 0);            // dup2 -> stdin
+        _zag_raw_syscall(59, sh_c as i64, argv as i64, envp as i64, 0, 0, 0); // execve
+        _zag_raw_syscall(60, 127, 0, 0, 0, 0, 0);            // exit(127)
+    }
+    _zag_println(_zag_str_concat("parent: child pid = ", _zag_i64_to_str(pid)));
+    // wait4 to reap
+    let stbuf: *i8 = _zag_malloc(16);
+    _zag_raw_syscall(61, pid, stbuf as i64, 0, 0, 0, 0);
+    _zag_println("reaped child");
+    return 0;
+}
