@@ -11,6 +11,21 @@ struct ProviderIdentity {
     executable: []u8,
     detected_path: []u8,
     available: bool,
+    authenticated: bool,
+}
+
+struct CliRun {
+    pid: i64,
+    session_id: []u8,
+    provider_id: []u8,
+    output_path: []u8,
+    seen_bytes: i32,
+    pending_line: []u8,
+    assistant_text: []u8,
+    last_snapshot: []u8,
+    cancelled: bool,
+    timed_out: bool,
+    started_ms: i64,
 }
 
 struct AppCore {
@@ -21,6 +36,8 @@ struct AppCore {
     data_dir: []u8,
     always_create_session: bool,
     test_provider_enabled: bool,
+    selected_provider_id: []u8,
+    cli_run: ?*CliRun,
     ready: bool,
     error_code: []u8,
 }
@@ -42,6 +59,7 @@ fn core_add_provider(core: *AppCore, id: []u8, name_: []u8, transport: []u8, exe
         .executable = executable,
         .detected_path = "",
         .available = false,
+        .authenticated = false,
     }));
 }
 
@@ -84,18 +102,41 @@ fn core_find_executable_in_path(executable: []u8, path_env: []u8) []u8 {
     return "";
 }
 
+fn core_cline_authenticated(home: []u8) bool {
+    if (home.len == 0) { return false; }
+    let raw: []u8 = util_read_or_empty(_zag_str_concat(home, "/.cline/data/secrets.json"));
+    if (raw.len == 0) { return false; }
+    if (json_parse(raw)) |node| {
+        switch (node.*) {
+            .obj => |entries| {
+                let i: i32 = 0;
+                while (i < entries.len) {
+                    if (json_str(get[JEntry](entries, i).val).len > 0) { return true; }
+                    i = i + 1;
+                }
+            }
+            else => { }
+        }
+    }
+    return false;
+}
+
 fn core_refresh_providers(core: *AppCore, path_env: []u8) i32 {
     let found: i32 = 0;
     let i: i32 = 0;
     while (i < core.*.providers.len) {
         let provider: *ProviderIdentity = get[*ProviderIdentity](core.*.providers, i);
         provider.*.available = false;
+        provider.*.authenticated = false;
         provider.*.detected_path = "";
         if (str_eq(provider.*.transport, "cli") && provider.*.executable.len > 0) {
             let path: []u8 = core_find_executable_in_path(provider.*.executable, path_env);
             if (path.len > 0) {
                 provider.*.available = true;
                 provider.*.detected_path = path;
+                if (str_eq(provider.*.id, "cline")) {
+                    provider.*.authenticated = core_cline_authenticated(_zag_getenv("HOME"));
+                }
                 found = found + 1;
             }
         }
@@ -125,7 +166,8 @@ fn core_save_settings(core: *AppCore) bool {
     let value: []u8 = "false";
     if (core.*.always_create_session) { value = "true"; }
     return util_write_atomic(core_settings_path(core),
-        _zag_str_concat("{\"schemaVersion\":1,\"alwaysCreateSession\":", _zag_str_concat(value, "}")));
+        _zag_str_concat("{\"schemaVersion\":1,\"alwaysCreateSession\":", _zag_str_concat(value,
+            _zag_str_concat(",\"selectedProvider\":\"", _zag_str_concat(str_escape_json(core.*.selected_provider_id), "\"}")))));
 }
 
 fn core_load_settings(core: *AppCore) bool {
@@ -139,6 +181,9 @@ fn core_load_settings(core: *AppCore) bool {
     if (parsed) |node| {
         if (json_int(json_get(node, "schemaVersion")) == 1) {
             core.*.always_create_session = json_bool(json_get(node, "alwaysCreateSession"));
+            let selected: []u8 = json_str(json_get(node, "selectedProvider"));
+            if (selected.len == 0) { core.*.selected_provider_id = ""; }
+            else if (core_find_provider(core, selected)) |_provider| { core.*.selected_provider_id = _zag_strdup(selected); }
             return true;
         }
     }
@@ -172,6 +217,8 @@ fn core_open_mode(data_dir: []u8, test_provider_enabled: bool) *AppCore {
         .data_dir = _zag_strdup(data_dir),
         .always_create_session = false,
         .test_provider_enabled = test_provider_enabled,
+        .selected_provider_id = "",
+        .cli_run = null,
         .ready = false,
         .error_code = "",
     });
@@ -214,6 +261,101 @@ fn core_find_provider(core: *AppCore, id: []u8) ?*ProviderIdentity {
 
 fn core_reject(core: *AppCore, cmd: *AppCommand, code: []u8, message: []u8) bool {
     core_event(core, AppEventKind.command_rejected, cmd.*.session_id, message, code);
+    return false;
+}
+
+fn core_cline_line(core: *AppCore, run: *CliRun, line: []u8) void {
+    let parsed: ?*JNode = json_parse(str_trim(line));
+    if (parsed) |node| {
+        let kind: []u8 = json_str(json_get(node, "type"));
+        let say: []u8 = json_str(json_get(node, "say"));
+        let text_: []u8 = json_str(json_get(node, "text"));
+        if (str_eq(kind, "say") && (str_eq(say, "text") || str_eq(say, "completion_result")) && text_.len > 0) {
+            let delta: []u8 = text_;
+            if (str_starts_with(text_, run.*.last_snapshot)) { delta = text_[run.*.last_snapshot.len..]; }
+            run.*.last_snapshot = _zag_strdup(text_);
+            if (delta.len > 0) {
+                run.*.assistant_text = _zag_str_concat(run.*.assistant_text, delta);
+                core_event(core, AppEventKind.stream_delta, run.*.session_id, delta, "");
+            }
+        } else if (str_eq(kind, "say") && str_eq(say, "reasoning")) {
+            core_event(core, AppEventKind.agent_status, run.*.session_id, "thinking", "");
+        } else if (str_eq(kind, "error") && text_.len > 0) {
+            core_event(core, AppEventKind.command_rejected, run.*.session_id, text_, "E_PROVIDER_STREAM");
+        }
+    }
+}
+
+fn core_finish_cli(core: *AppCore, run: *CliRun, exit_code: i32, raw: []u8) void {
+    if (run.*.timed_out) {
+        core_event(core, AppEventKind.command_rejected, run.*.session_id, "Cline exceeded the 300 second turn limit.", "E_PROVIDER_TIMEOUT");
+        core_event(core, AppEventKind.agent_status, run.*.session_id, "error", "");
+    } else if (run.*.cancelled) {
+        if (run.*.assistant_text.len > 0) {
+            run.*.assistant_text = _zag_str_concat(run.*.assistant_text, "\n\nStopped by user.");
+        }
+        core_event(core, AppEventKind.agent_status, run.*.session_id, "cancelled", "");
+    } else if (exit_code != 0 && run.*.assistant_text.len == 0) {
+        let detail: []u8 = str_trim(raw);
+        if (detail.len == 0) { detail = _zag_str_concat("Cline exited with status ", _zag_i64_to_str(exit_code as i64)); }
+        if (detail.len > 300) { detail = detail[0..300]; }
+        core_event(core, AppEventKind.command_rejected, run.*.session_id, detail, "E_PROVIDER_EXIT");
+        core_event(core, AppEventKind.agent_status, run.*.session_id, "error", "");
+        util_unlink(run.*.output_path);
+        core.*.cli_run = null;
+        return;
+    }
+    if (run.*.assistant_text.len > 0) {
+        if (store_find(core.*.store, run.*.session_id)) |session| {
+            let serialized: []u8 = message_json(util_nanoid(12), session.*.id, "assistant",
+                run.*.assistant_text, "cline-default", "cline", 0, 0, 0, util_now_ms());
+            store_append_message(core.*.store, session.*.id, serialized);
+            session.*.message_count = session.*.message_count + 1;
+            store_touch(core.*.store, session);
+            core_event(core, AppEventKind.assistant_added, session.*.id, run.*.assistant_text, "");
+        }
+    }
+    if (!run.*.cancelled && !run.*.timed_out) { core_event(core, AppEventKind.agent_status, run.*.session_id, "done", ""); }
+    util_unlink(run.*.output_path);
+    core.*.cli_run = null;
+}
+
+fn core_tick(core: *AppCore) void {
+    if (core.*.cli_run) |run| {
+        if (!run.*.cancelled && !run.*.timed_out && util_now_ms() - run.*.started_ms > 300000) {
+            run.*.timed_out = true;
+            util_kill_child(run.*.pid);
+        }
+        let raw: []u8 = util_read_or_empty(run.*.output_path);
+        if (raw.len > run.*.seen_bytes) {
+            let chunk: []u8 = _zag_str_concat(run.*.pending_line, raw[run.*.seen_bytes..]);
+            run.*.seen_bytes = raw.len;
+            let rest: []u8 = chunk;
+            let parsing: bool = true;
+            while (parsing) {
+                let part: SplitResult = str_split_first(rest, '\n' as u8);
+                if (!part.found) { run.*.pending_line = _zag_strdup(rest); parsing = false; }
+                else { core_cline_line(core, run, part.head); rest = part.tail; }
+            }
+        }
+        let exit_code: i32 = util_poll_child(run.*.pid);
+        if (exit_code >= 0) {
+            if (run.*.pending_line.len > 0) { core_cline_line(core, run, run.*.pending_line); }
+            core_finish_cli(core, run, exit_code, raw);
+        }
+    }
+}
+
+fn core_cli_running(core: *AppCore) bool {
+    if (core.*.cli_run) |_run| { return true; }
+    return false;
+}
+
+fn core_can_send(core: *AppCore) bool {
+    if (core.*.test_provider_enabled) { return true; }
+    if (core_find_provider(core, core.*.selected_provider_id)) |provider| {
+        return str_eq(provider.*.id, "cline") && provider.*.available && provider.*.authenticated;
+    }
     return false;
 }
 
@@ -278,8 +420,24 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
         if (core.*.active_session_id.len == 0) {
             return core_reject(core, cmd, "E_SESSION_REQUIRED", "Create or select a session first.");
         }
+        let cli_pid: i64 = 0 - 1;
+        let cli_output: []u8 = "";
         if (!core.*.test_provider_enabled) {
-            return core_reject(core, cmd, "E_PROVIDER_REQUIRED", "No executable model provider is selected. Open Settings and connect a provider before sending.");
+            if (core.*.selected_provider_id.len == 0) {
+                return core_reject(core, cmd, "E_PROVIDER_REQUIRED", "No executable model provider is selected. Open Settings and connect a provider before sending.");
+            }
+            if (core.*.cli_run) |_running| { return core_reject(core, cmd, "E_PROVIDER_BUSY", "The selected provider is already running a turn."); }
+            let selected: ?*ProviderIdentity = core_find_provider(core, core.*.selected_provider_id);
+            if (selected) |provider| {
+                if (!provider.*.available || !str_eq(provider.*.id, "cline")) {
+                    return core_reject(core, cmd, "E_PROVIDER_EXECUTOR_UNAVAILABLE", "This provider does not yet have a verified native executor.");
+                }
+                cli_output = _zag_str_concat(core.*.data_dir, _zag_str_concat("/cline-", _zag_str_concat(util_nanoid(8), ".jsonl")));
+                util_write_atomic(cli_output, "");
+                let cwd: []u8 = ".";
+                cli_pid = native_spawn_cline(provider.*.detected_path, cmd.*.payload, cwd, cli_output);
+                if (cli_pid < 0) { return core_reject(core, cmd, "E_PROVIDER_SPAWN", "Cline could not be started."); }
+            } else { return core_reject(core, cmd, "E_PROVIDER_REQUIRED", "The selected provider no longer exists."); }
         }
         if (store_find(core.*.store, core.*.active_session_id)) |session| {
             let now: i64 = util_now_ms();
@@ -289,6 +447,14 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
             session.*.message_count = session.*.message_count + 1;
             store_touch(core.*.store, session);
             core_event(core, AppEventKind.message_added, session.*.id, cmd.*.payload, "");
+            if (!core.*.test_provider_enabled) {
+                core.*.cli_run = new(CliRun{ .pid = cli_pid, .session_id = _zag_strdup(session.*.id),
+                    .provider_id = "cline", .output_path = cli_output, .seen_bytes = 0,
+                    .pending_line = "", .assistant_text = "", .last_snapshot = "", .cancelled = false,
+                    .timed_out = false, .started_ms = util_now_ms() });
+                core_event(core, AppEventKind.agent_status, session.*.id, "thinking", "");
+                return true;
+            }
             core_event(core, AppEventKind.agent_status, session.*.id, "thinking", "");
             let reply: []u8 = _zag_str_concat("Simulator reply: ", cmd.*.payload);
             core_event(core, AppEventKind.stream_delta, session.*.id, reply, "");
@@ -311,6 +477,22 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
         }
         return core_reject(core, cmd, "E_PROVIDER_UNKNOWN", "The provider identity is not in the verified catalog.");
     }
+    if (cmd.*.kind == AppCommandKind.provider_select) {
+        if (core_find_provider(core, cmd.*.payload)) |provider| {
+            if (!provider.*.available) { return core_reject(core, cmd, "E_PROVIDER_UNAVAILABLE", "The provider executable is unavailable."); }
+            if (!str_eq(provider.*.id, "cline")) { return core_reject(core, cmd, "E_PROVIDER_EXECUTOR_UNAVAILABLE", "This CLI executor is not implemented yet."); }
+            if (!provider.*.authenticated) { return core_reject(core, cmd, "E_PROVIDER_AUTH", "Cline is not authenticated. Run cline auth, then refresh providers."); }
+            let previous: []u8 = core.*.selected_provider_id;
+            core.*.selected_provider_id = _zag_strdup(provider.*.id);
+            if (!core_save_settings(core)) {
+                core.*.selected_provider_id = previous;
+                return core_reject(core, cmd, "E_SETTINGS_WRITE", "The provider selection could not be saved.");
+            }
+            core_event(core, AppEventKind.provider_changed, "", provider.*.id, "");
+            return true;
+        }
+        return core_reject(core, cmd, "E_PROVIDER_UNKNOWN", "The provider identity is not in the verified catalog.");
+    }
     if (cmd.*.kind == AppCommandKind.provider_refresh) {
         let _found: i32 = core_refresh_providers(core, _zag_getenv("PATH"));
         return true;
@@ -328,6 +510,15 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
         core_event(core, AppEventKind.setting_changed, "", cmd.*.payload, "");
         return true;
     }
+    if (cmd.*.kind == AppCommandKind.message_cancel) {
+        if (core.*.cli_run) |run| {
+            run.*.cancelled = true;
+            util_kill_child(run.*.pid);
+            return true;
+        }
+        return core_reject(core, cmd, "E_PROVIDER_IDLE", "There is no running provider turn to cancel.");
+    }
+    if (cmd.*.kind == AppCommandKind.service_tick) { core_tick(core); return true; }
     if (cmd.*.kind == AppCommandKind.recovery_retry) {
         if (core_check_schema(core) && core_load_settings(core)) {
             core.*.ready = true;

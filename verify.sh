@@ -55,9 +55,12 @@ fi
 if "$znc" src/native/core_test.zag -o build/core_test --analyze-strict >/tmp/koryphaios-zag-core-build.log 2>&1 &&
    core_output="$(build/core_test)" &&
    printf '%s\n' "$core_output" | rg -q 'production chat fails closed before persistence' &&
+   printf '%s\n' "$core_output" | rg -q 'Cline NDJSON snapshots stream once and persist assistant output' &&
+   printf '%s\n' "$core_output" | rg -q 'Cline cancellation sends SIGTERM' &&
+   printf '%s\n' "$core_output" | rg -q 'Cline timeout kills and reaps' &&
    printf '%s\n' "$core_output" | rg -q 'test simulator persists user and assistant without estimated usage' &&
    printf '%s\n' "$core_output" | rg -q 'NATIVE CORE: ALL PASS'; then
-  record native-core pass persistence-recovery-provider-fail-closed-test-stream-session-lifecycle-settings-errors
+  record native-core pass persistence-recovery-cline-exec-auth-stream-cancel-timeout-provider-fail-closed-test-stream-session-lifecycle-settings-errors
 else
   record native-core fail failed
   sed -n '1,80p' /tmp/koryphaios-zag-core-build.log >&2

@@ -36,6 +36,73 @@ fn main() i32 {
     check("PATH detection requires an executable and ignores empty entries",
         str_eq(core_find_executable_in_path("codex", _zag_str_concat(":", fake_bin)), fake_codex) &&
         core_find_executable_in_path("missing", fake_bin).len == 0, &failures);
+    let auth_home: []u8 = _zag_str_concat(root, "/auth-home");
+    util_mkdir(auth_home); util_mkdir(_zag_str_concat(auth_home, "/.cline"));
+    util_mkdir(_zag_str_concat(auth_home, "/.cline/data"));
+    util_write_atomic(_zag_str_concat(auth_home, "/.cline/data/secrets.json"), "{\"provider\":\"configured\"}");
+    check("Cline authentication is derived from its own parseable secret store",
+        core_cline_authenticated(auth_home) && !core_cline_authenticated(fake_bin), &failures);
+
+    let fake_cline: []u8 = _zag_str_concat(fake_bin, "/cline");
+    util_write_atomic(fake_cline,
+        "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"say\",\"say\":\"text\",\"text\":\"Cline\"}'\nprintf '%s\\n' '{\"type\":\"say\",\"say\":\"text\",\"text\":\"Cline complete\"}'\nexit 0\n");
+    util_chmod(fake_cline, 493);
+    let refreshed: i32 = core_refresh_providers(production, fake_bin);
+    if (core_find_provider(production, "cline")) |cline_provider| { cline_provider.*.authenticated = true; }
+    let select_cline: AppCommand = core_command(AppCommandKind.provider_select, "", "cline");
+    check("real Cline executor selection requires detected executable",
+        refreshed >= 2 && core_dispatch(production, &select_cline) &&
+        str_eq(production.*.selected_provider_id, "cline"), &failures);
+    let injection_marker: []u8 = _zag_str_concat(production_root, "/shell-injection-must-not-exist");
+    let real_send: AppCommand = core_command(AppCommandKind.message_send, "",
+        _zag_str_concat("$(touch ", _zag_str_concat(injection_marker, ")")));
+    let real_started: bool = core_dispatch(production, &real_send);
+    if (!real_started) {
+        let failure_event: *AppEvent = get[*AppEvent](production.*.events, production.*.events.len - 1);
+        _zag_print("  diagnostic Cline start: "); _zag_print(failure_event.*.code); _zag_print(" "); _zag_println(failure_event.*.payload);
+    }
+    check("Cline turn starts asynchronously through direct execve", real_started &&
+        production.*.cli_run != null, &failures);
+    let spins: i32 = 0;
+    while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    let production_messages: []u8 = store_messages_raw(production.*.store, production.*.active_session_id);
+    if (get[*Session](production.*.store.*.sessions, 0).*.message_count != 2 ||
+        str_index_of(production_messages, "Cline complete") < 0) {
+        _zag_print("  diagnostic Cline finish spins="); _zag_print(_zag_i64_to_str(spins as i64));
+        _zag_print(" count="); _zag_print(_zag_i64_to_str(get[*Session](production.*.store.*.sessions, 0).*.message_count));
+        _zag_print(" messages="); _zag_println(production_messages);
+    }
+    check("Cline NDJSON snapshots stream once and persist assistant output",
+        !core_cli_running(production) &&
+        get[*Session](production.*.store.*.sessions, 0).*.message_count == 2 &&
+        str_index_of(production_messages, "Cline complete") >= 0 &&
+        util_read_or_empty(injection_marker).len == 0, &failures);
+
+    util_write_atomic(fake_cline, "#!/bin/sh\nwhile :; do :; done\n");
+    util_chmod(fake_cline, 493);
+    let long_send: AppCommand = core_command(AppCommandKind.message_send, "", "cancel this turn");
+    let long_started: bool = core_dispatch(production, &long_send);
+    let cancel_turn: AppCommand = core_command(AppCommandKind.message_cancel, production.*.active_session_id, "");
+    let cancel_sent: bool = core_dispatch(production, &cancel_turn);
+    spins = 0;
+    while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    check("Cline cancellation sends SIGTERM, reaps the child, and emits cancelled",
+        long_started && cancel_sent && !core_cli_running(production) &&
+        get[*AppEvent](production.*.events, production.*.events.len - 1).*.kind == AppEventKind.agent_status &&
+        str_eq(get[*AppEvent](production.*.events, production.*.events.len - 1).*.payload, "cancelled"), &failures);
+    let timeout_send: AppCommand = core_command(AppCommandKind.message_send, "", "timeout this turn");
+    let timeout_started: bool = core_dispatch(production, &timeout_send);
+    if (production.*.cli_run) |timeout_run| { timeout_run.*.started_ms = 0; }
+    spins = 0;
+    while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    let saw_timeout: bool = false;
+    let event_i: i32 = 0;
+    while (event_i < production.*.events.len) {
+        if (str_eq(get[*AppEvent](production.*.events, event_i).*.code, "E_PROVIDER_TIMEOUT")) { saw_timeout = true; }
+        event_i = event_i + 1;
+    }
+    check("Cline timeout kills and reaps the child with a stable error code",
+        timeout_started && !core_cli_running(production) && saw_timeout, &failures);
 
     let make_session: AppCommand = core_command(AppCommandKind.session_new, "", "Native workflow");
     check("session_new command succeeds", core_dispatch(core, &make_session), &failures);

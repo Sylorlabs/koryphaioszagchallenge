@@ -18,6 +18,22 @@ persistence without network credentials:
 
 The simulator reports no token count or cost. Zero values remain persistence
 defaults for unknown usage; the UI does not present them as measured usage.
-Real CLI/API adapters must replace the production rejection individually and
-must surface stderr, exit status, cancellation, authentication expiry, model
-availability, and provider-reported usage.
+## Cline executor
+
+Cline is the first production executor. The native core:
+
+- detects the executable from non-empty PATH entries;
+- derives authentication from Cline's own parseable
+  `~/.cline/data/secrets.json` without copying its key;
+- persists the selected identity in versioned native settings;
+- invokes `cline -p <prompt> --act --yolo --json` using direct `execve` argv,
+  never `sh -c`;
+- consumes cumulative NDJSON text snapshots into non-duplicated deltas;
+- polls and reaps the child without blocking the X11 event loop;
+- surfaces capped real stderr and exit status;
+- supports SIGTERM cancellation and a 300-second timeout;
+- persists partial output on cancellation with an explicit stopped marker;
+- reports no token usage unless a provider emits exact usage.
+
+The remaining CLI/API adapters must meet the same stderr, exit, cancellation,
+authentication, model-availability, and exact-usage contract.

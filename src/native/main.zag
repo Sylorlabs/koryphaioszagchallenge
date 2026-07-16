@@ -128,6 +128,11 @@ fn ui_toggle_always_create(ui: *NativeUi) void {
     let _ok: bool = ui_command(ui, cmd);
 }
 
+fn ui_select_provider(ui: *NativeUi, provider: *ProviderIdentity) void {
+    let cmd: AppCommand = core_command(AppCommandKind.provider_select, "", provider.*.id);
+    let _ok: bool = ui_command(ui, cmd);
+}
+
 fn ui_send(ui: *NativeUi) void {
     let cmd: AppCommand = core_command(AppCommandKind.message_send, "", ui.*.composer);
     if (ui_command(ui, cmd)) { ui.*.composer = ""; }
@@ -141,6 +146,11 @@ fn ui_refresh_providers(ui: *NativeUi) void {
 fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
     let ctrl: bool = (mods & 2) != 0;
     let shift: bool = (mods & 1) != 0;
+    if (code == 27 && core_cli_running(ui.*.core)) {
+        let cancel: AppCommand = core_command(AppCommandKind.message_cancel, ui.*.core.*.active_session_id, "");
+        let _cancelled: bool = ui_command(ui, cancel);
+        return;
+    }
     if (ui.*.delete_confirm_sid.len > 0) {
         if (code == 27) { ui.*.delete_confirm_sid = ""; }
         else if (code == 13) { ui_delete_session(ui, ui.*.delete_confirm_sid); }
@@ -197,6 +207,12 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
     }
     if (ui.*.settings_open) {
         if (mx >= 292 && mx < 620 && my >= 128 && my < 158) { ui_toggle_always_create(ui); }
+        else if (my >= 244) {
+            let idx: i32 = (my - 244) / 25;
+            if (idx >= 0 && idx < ui.*.core.*.providers.len) {
+                ui_select_provider(ui, list.get[*ProviderIdentity](ui.*.core.*.providers, idx));
+            }
+        }
         return;
     }
     if (ui.*.palette_open) { return; }
@@ -286,7 +302,7 @@ fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
         else { prompt = "Message Koryphaios"; }
     }
     draw_text_max(f, 304, h - 84, prompt, rgb(204, 192, 175), w - 380);
-    if (!ui.*.core.*.test_provider_enabled) {
+    if (!core_can_send(ui.*.core)) {
         draw_text_max(f, 290, h - 126, "Setup required: connect an executable provider before sending.", rgb(235, 130, 110), w - 330);
     }
     if (ui.*.last_error.len > 0) {
@@ -315,6 +331,8 @@ fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
         let provider: *ProviderIdentity = list.get[*ProviderIdentity](ui.*.core.*.providers, i);
         let state: []u8 = "unavailable";
         if (provider.*.available) { state = "available"; }
+        if (provider.*.available && str_eq(provider.*.id, "cline") && !provider.*.authenticated) { state = "auth required"; }
+        if (str_eq(provider.*.id, ui.*.core.*.selected_provider_id)) { state = "SELECTED"; }
         draw_text(f, 292, 248 + i * 25,
             _zag_str_concat(provider.*.name_, _zag_str_concat("  [", _zag_str_concat(provider.*.transport, _zag_str_concat("]  ", state)))),
             rgb(204, 192, 175));
@@ -466,6 +484,7 @@ fn run_x11() i32 {
     let f: FB = fb_new(x.*.win_w, x.*.win_h);
     while (!x.*.should_close) {
         x11_pump(x);
+        core_tick(core);
         if (f.w != x.*.win_w || f.h != x.*.win_h) { fb_resize(&f, x.*.win_w, x.*.win_h); }
         let k: i32 = 0;
         while (k < x.*.keys.len) {
