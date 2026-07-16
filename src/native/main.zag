@@ -13,6 +13,7 @@ struct NativeUi {
     composer_focused: bool,
     palette_open: bool,
     settings_open: bool,
+    provider_query: []u8,
     rename_mode: bool,
     delete_confirm_sid: []u8,
     knowledge_mode: i32,
@@ -60,6 +61,7 @@ fn ui_new(core: *AppCore, safe_mode: bool) *NativeUi {
         .composer_focused = true,
         .palette_open = false,
         .settings_open = false,
+        .provider_query = "",
         .rename_mode = false,
         .delete_confirm_sid = "",
         .knowledge_mode = 0,
@@ -162,6 +164,48 @@ fn ui_refresh_providers(ui: *NativeUi) void {
     let _ok: bool = ui_command(ui, cmd);
 }
 
+fn ascii_fold(c: u8) u8 {
+    if (c >= 'A' && c <= 'Z') { return c + 32; }
+    return c;
+}
+
+fn text_contains_folded(haystack: []u8, needle: []u8) bool {
+    if (needle.len == 0) { return true; }
+    if (needle.len > haystack.len) { return false; }
+    let start: i32 = 0;
+    while (start + needle.len <= haystack.len) {
+        let i: i32 = 0;
+        let same: bool = true;
+        while (i < needle.len) {
+            if (ascii_fold(haystack[start + i]) != ascii_fold(needle[i])) { same = false; }
+            i = i + 1;
+        }
+        if (same) { return true; }
+        start = start + 1;
+    }
+    return false;
+}
+
+fn provider_matches(ui: *NativeUi, provider: *ProviderIdentity) bool {
+    return text_contains_folded(provider.*.name_, ui.*.provider_query) ||
+        text_contains_folded(provider.*.id, ui.*.provider_query) ||
+        text_contains_folded(provider.*.transport, ui.*.provider_query);
+}
+
+fn provider_filtered_at(ui: *NativeUi, want: i32) ?*ProviderIdentity {
+    let i: i32 = 0;
+    let found: i32 = 0;
+    while (i < ui.*.core.*.providers.len) {
+        let provider: *ProviderIdentity = list.get[*ProviderIdentity](ui.*.core.*.providers, i);
+        if (provider_matches(ui, provider)) {
+            if (found == want) { return provider; }
+            found = found + 1;
+        }
+        i = i + 1;
+    }
+    return null;
+}
+
 fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
     let ctrl: bool = (mods & 2) != 0;
     let shift: bool = (mods & 1) != 0;
@@ -200,7 +244,23 @@ fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
         if (store_find(ui.*.core.*.store, ui.*.core.*.active_session_id)) |session| { ui_begin_rename(ui, session); }
         return;
     }
-    if (ui.*.settings_open && code == 'a') { ui_toggle_always_create(ui); return; }
+    if (ui.*.settings_open) {
+        if (ctrl && code == 'a') { ui_toggle_always_create(ui); return; }
+        if (code == 8) {
+            if (ui.*.provider_query.len > 0) {
+                ui.*.provider_query = ui.*.provider_query[0..ui.*.provider_query.len - 1];
+            }
+            return;
+        }
+        if (code == 13) {
+            if (provider_filtered_at(ui, 0)) |provider| { ui_select_provider(ui, provider); }
+            return;
+        }
+        if (!ctrl && code >= 32 && code < 127 && ui.*.provider_query.len < 80) {
+            ui.*.provider_query = _zag_str_concat(ui.*.provider_query, one_char(code));
+            return;
+        }
+    }
     if (code == 9) { ui.*.composer_focused = !ui.*.composer_focused; return; }
     if (((ui.*.palette_open || ui.*.settings_open) && ui.*.knowledge_mode == 0) || !ui.*.composer_focused) { return; }
     if (code == 13) {
@@ -232,10 +292,10 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
     }
     if (ui.*.settings_open) {
         if (mx >= 292 && mx < 620 && my >= 128 && my < 158) { ui_toggle_always_create(ui); }
-        else if (my >= 244) {
-            let idx: i32 = (my - 244) / 25;
-            if (idx >= 0 && idx < ui.*.core.*.providers.len) {
-                ui_select_provider(ui, list.get[*ProviderIdentity](ui.*.core.*.providers, idx));
+        else if (my >= 272) {
+            let idx: i32 = (my - 272) / 25;
+            if (idx >= 0) {
+                if (provider_filtered_at(ui, idx)) |provider| { ui_select_provider(ui, provider); }
             }
         }
         return;
@@ -350,18 +410,29 @@ fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     let reuse_label: []u8 = "Reuse untouched session: ON";
     if (ui.*.core.*.always_create_session) { reuse_label = "Always create new session: ON"; }
     draw_button(f, 292, 128, 328, reuse_label, ui.*.core.*.always_create_session);
+    draw_text(f, 632, 146, "Ctrl+A toggles", rgb(139, 129, 116));
     draw_text_scaled(f, 292, 182, "Providers", rgb(239, 230, 215), 2);
     draw_text(f, 292, 216, "Distinct identities; CLI availability comes from executable PATH checks.", rgb(183, 172, 155));
+    fill_rect(f, 292, 230, 328, 30, rgb(35, 31, 29));
+    round_rect_outline(f, 292, 230, 328, 30, 5, rgb(213, 178, 97));
+    let search_label: []u8 = ui.*.provider_query;
+    if (search_label.len == 0) { search_label = "Search providers and transports"; }
+    draw_text_max(f, 302, 244, search_label, rgb(204, 192, 175), 308);
     let i: i32 = 0;
-    while (i < ui.*.core.*.providers.len && 248 + i * 25 < h - 68) {
+    let shown: i32 = 0;
+    while (i < ui.*.core.*.providers.len && 272 + shown * 25 < h - 68) {
         let provider: *ProviderIdentity = list.get[*ProviderIdentity](ui.*.core.*.providers, i);
-        let state: []u8 = "unavailable";
-        if (provider.*.available) { state = "available"; }
-        if (provider.*.available && str_eq(provider.*.id, "cline") && !provider.*.authenticated) { state = "auth required"; }
-        if (str_eq(provider.*.id, ui.*.core.*.selected_provider_id)) { state = "SELECTED"; }
-        draw_text(f, 292, 248 + i * 25,
-            _zag_str_concat(provider.*.name_, _zag_str_concat("  [", _zag_str_concat(provider.*.transport, _zag_str_concat("]  ", state)))),
-            rgb(204, 192, 175));
+        if (provider_matches(ui, provider)) {
+            let state: []u8 = "unavailable";
+            if (provider.*.available) { state = "available"; }
+            if (provider.*.available && (str_eq(provider.*.id, "cline") || str_eq(provider.*.id, "codex")) &&
+                !provider.*.authenticated) { state = "auth required"; }
+            if (str_eq(provider.*.id, ui.*.core.*.selected_provider_id)) { state = "SELECTED"; }
+            draw_text(f, 292, 272 + shown * 25,
+                _zag_str_concat(provider.*.name_, _zag_str_concat("  [", _zag_str_concat(provider.*.transport, _zag_str_concat("]  ", state)))),
+                rgb(204, 192, 175));
+            shown = shown + 1;
+        }
         i = i + 1;
     }
 }
@@ -432,12 +503,16 @@ fn run_headless() i32 {
     let settings_works: bool = ui.*.settings_open &&
         ui_last_event(ui) != null &&
         list.get[*AppEvent](ui.*.core.*.events, ui.*.core.*.events.len - 1).*.kind == AppEventKind.provider_changed;
-    ui_key(ui, 'a', 0);
+    ui_key(ui, 'c', 0);
+    let search_works: bool = str_eq(ui.*.provider_query, "c") &&
+        text_contains_folded("Codex", "cod") && !text_contains_folded("Codex", "cline");
+    ui_key(ui, 8, 0);
+    ui_key(ui, 'a', 2);
     let setting_works: bool = core.*.always_create_session;
-    ui_key(ui, 'a', 0);
+    ui_key(ui, 'a', 2);
     ui_key(ui, 27, 0);
     if (!core.*.ready || core.*.store.*.sessions.len != 1 ||
-        list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 2 || !palette_works || !settings_works || !setting_works) {
+        list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 2 || !palette_works || !settings_works || !search_works || !setting_works) {
         _zag_eprintln("native-headless: FAIL workflow");
         return 1;
     }
@@ -500,7 +575,7 @@ fn run_headless() i32 {
             fb_write_bmp(&physical, path);
         }
     }
-    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=user-assistant-persist simulator=test-only usage=unknown-omitted settings=persist knowledge=markdown-memory-rules renderer=framebuffer");
+    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=user-assistant-persist simulator=test-only usage=unknown-omitted settings=provider-search-persist knowledge=markdown-memory-rules renderer=framebuffer");
     return 0;
 }
 

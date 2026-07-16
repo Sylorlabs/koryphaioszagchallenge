@@ -1,0 +1,110 @@
+@import("provider_codex.zag")
+
+fn codex_check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn codex_has_event(run: *CodexRun, kind: CodexEventKind) bool {
+    let i: i32 = 0;
+    while (i < run.*.events.len) {
+        if (get[*CodexEvent](run.*.events, i).*.kind == kind) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn codex_find_event(run: *CodexRun, kind: CodexEventKind) ?*CodexEvent {
+    let i: i32 = 0;
+    while (i < run.*.events.len) {
+        let event: *CodexEvent = get[*CodexEvent](run.*.events, i);
+        if (event.*.kind == kind) { return event; }
+        i = i + 1;
+    }
+    return null;
+}
+
+fn codex_wait(run: *CodexRun) void {
+    let spins: i32 = 0;
+    while (!run.*.finished && spins < 200000) { codex_tick(run); spins = spins + 1; }
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let root: []u8 = _zag_str_concat("/tmp/koryphaios-codex-", _zag_i64_to_str(util_getpid()));
+    util_mkdir(root);
+    let fake: []u8 = _zag_str_concat(root, "/codex");
+    let args_path: []u8 = _zag_str_concat(root, "/args");
+    let script: []u8 = _zag_str_concat("#!/bin/sh\n: > '", _zag_str_concat(args_path,
+        _zag_str_concat("'\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> '", _zag_str_concat(args_path,
+        "'; done\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}' '{\"type\":\"turn.started\"}' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"provider truth\"}}' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":80,\"output_tokens\":9}}'\nprintf '%s\\n' 'provider warning' >&2\nexit 0\n"))));
+    util_write_atomic(fake, script); util_chmod(fake, 493);
+    let marker: []u8 = _zag_str_concat(root, "/must-not-exist");
+    let prompt: []u8 = _zag_str_concat("$(touch ", _zag_str_concat(marker, ")"));
+    let run: *CodexRun = codex_spawn(fake, prompt, root, "gpt-test", _zag_str_concat(root, "/out"), _zag_str_concat(root, "/err"));
+    codex_wait(run);
+    let args: []u8 = util_read_or_empty(args_path);
+    codex_check("Codex uses direct argv and prompt text cannot execute a shell",
+        run.*.finished && run.*.exit_code == 0 && util_read_or_empty(marker).len == 0 &&
+        str_index_of(args, "--ask-for-approval\nnever\nexec\n--json") >= 0 &&
+        str_index_of(args, "--sandbox\nread-only") >= 0 &&
+        str_index_of(args, prompt) >= 0, &failures);
+    codex_check("Codex JSONL emits completed assistant text",
+        codex_has_event(run, CodexEventKind.thread_started) &&
+        codex_has_event(run, CodexEventKind.turn_started) &&
+        codex_find_event(run, CodexEventKind.assistant_message) != null, &failures);
+    if (codex_find_event(run, CodexEventKind.usage)) |usage| {
+        codex_check("Codex usage is provider-reported exact integers",
+            usage.*.usage_known && usage.*.input_tokens == 120 &&
+            usage.*.cached_input_tokens == 80 && usage.*.output_tokens == 9, &failures);
+    } else { codex_check("Codex usage is provider-reported exact integers", false, &failures); }
+    if (codex_find_event(run, CodexEventKind.stderr_text)) |stderr_event| {
+        codex_check("Codex stderr is preserved separately", str_index_of(stderr_event.*.text, "provider warning") >= 0, &failures);
+    } else { codex_check("Codex stderr is preserved separately", false, &failures); }
+
+    let parser: *CodexRun = new(CodexRun{ .pid = 0 - 1, .stdout_path = "", .stderr_path = "",
+        .stdout_seen = 0, .stderr_seen = 0, .pending_line = "", .events = make[*CodexEvent](4),
+        .finished = true, .cancelled = false, .exit_code = 0 });
+    codex_parse_line(parser, "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":12.5,\"output_tokens\":4}}");
+    codex_parse_line(parser, "{\"type\":\"turn.failed\",\"error\":{\"message\":\"model unavailable\"}}");
+    codex_parse_line(parser, "not-json");
+    codex_check("Unknown or non-integral usage is omitted, never estimated",
+        !codex_has_event(parser, CodexEventKind.usage), &failures);
+    codex_check("Provider and malformed-stream errors remain visible",
+        codex_has_event(parser, CodexEventKind.provider_error) && parser.*.events.len == 2, &failures);
+    codex_check("Authentication status requires successful CLI-owned login truth",
+        codex_auth_status(0, "Logged in using ChatGPT\n", "") &&
+        !codex_auth_status(1, "Logged in using ChatGPT\n", "") &&
+        !codex_auth_status(0, "", "not logged in"), &failures);
+
+    let auth_script: []u8 = "#!/bin/sh\nif [ \"$1\" = login ] && [ \"$2\" = status ]; then printf '%s\\n' 'Logged in using ChatGPT'; exit 0; fi\nexit 99\n";
+    util_write_atomic(fake, auth_script); util_chmod(fake, 493);
+    let auth_run: *CodexAuthRun = codex_spawn_auth_status(fake, _zag_str_concat(root, "/auth-out"), _zag_str_concat(root, "/auth-err"));
+    let auth_spins: i32 = 0;
+    while (!auth_run.*.finished && auth_spins < 200000) { codex_auth_tick(auth_run); auth_spins = auth_spins + 1; }
+    codex_check("Codex authentication is checked asynchronously by direct login-status argv",
+        auth_run.*.finished && auth_run.*.exit_code == 0 && auth_run.*.authenticated, &failures);
+
+    let fail_script: []u8 = "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"turn.failed\",\"error\":{\"message\":\"requested model is unavailable\"}}'\nprintf '%s\\n' 'authentication expired' >&2\nexit 23\n";
+    util_write_atomic(fake, fail_script); util_chmod(fake, 493);
+    let failed: *CodexRun = codex_spawn(fake, "fail", root, "missing-model", _zag_str_concat(root, "/fail-out"), _zag_str_concat(root, "/fail-err"));
+    codex_wait(failed);
+    codex_check("Codex model/auth failures preserve JSON error, stderr, and exit status",
+        failed.*.finished && failed.*.exit_code == 23 &&
+        codex_has_event(failed, CodexEventKind.provider_error) &&
+        codex_has_event(failed, CodexEventKind.stderr_text) &&
+        codex_find_event(failed, CodexEventKind.process_exit) != null, &failures);
+
+    let slow_script: []u8 = "#!/bin/sh\nwhile :; do :; done\n";
+    util_write_atomic(fake, slow_script); util_chmod(fake, 493);
+    let slow: *CodexRun = codex_spawn(fake, "cancel", root, "", _zag_str_concat(root, "/slow-out"), _zag_str_concat(root, "/slow-err"));
+    let cancel_sent: bool = codex_cancel(slow);
+    codex_wait(slow);
+    codex_check("Codex cancellation sends SIGTERM and reaps the real child",
+        cancel_sent && slow.*.cancelled && slow.*.finished && slow.*.exit_code >= 128, &failures);
+
+    _zag_print("codex-provider: "); _zag_print(_zag_i64_to_str((10 - failures) as i64));
+    _zag_print("/10 passed\n");
+    if (failures == 0) { return 0; }
+    return 1;
+}

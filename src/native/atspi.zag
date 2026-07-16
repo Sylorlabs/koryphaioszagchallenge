@@ -1,0 +1,336 @@
+// Native accessibility semantics and the fail-closed edge of the AT-SPI bus.
+//
+// The semantic tree is useful without transport: keyboard navigation and UI
+// tests consume the same roles, states and actions that a future D-Bus object
+// server will expose.  Transport readiness is deliberately separate from tree
+// readiness so constructing a tree can never imply screen-reader availability.
+
+@import("../zrt/str.zag")
+
+enum AccessibleRole {
+    application,
+    frame,
+    panel,
+    list,
+    list_item,
+    document_text,
+    entry,
+    push_button,
+    status,
+    dialog,
+}
+
+const A11Y_STATE_VISIBLE: i64 = 1;
+const A11Y_STATE_ENABLED: i64 = 2;
+const A11Y_STATE_FOCUSABLE: i64 = 4;
+const A11Y_STATE_FOCUSED: i64 = 8;
+const A11Y_STATE_EDITABLE: i64 = 16;
+const A11Y_STATE_MULTILINE: i64 = 32;
+const A11Y_STATE_BUSY: i64 = 64;
+
+const A11Y_ACTION_ACTIVATE: i64 = 1;
+const A11Y_ACTION_SET_TEXT: i64 = 2;
+
+struct AccessibleNode {
+    id: i32,
+    parent_id: i32,
+    role: AccessibleRole,
+    name_: []u8,
+    description: []u8,
+    value: []u8,
+    states: i64,
+    actions: i64,
+    tab_index: i32,
+    children: ArrayList[i32],
+    activation_count: i32,
+}
+
+struct AccessibilityTree {
+    nodes: ArrayList[*AccessibleNode],
+    root_id: i32,
+    focused_id: i32,
+    error_code: []u8,
+    generation: i64,
+}
+
+fn a11y_tree() AccessibilityTree {
+    return AccessibilityTree{
+        .nodes = make[*AccessibleNode](24),
+        .root_id = 0,
+        .focused_id = 0,
+        .error_code = "",
+        .generation = 0,
+    };
+}
+
+fn a11y_find(tree: *AccessibilityTree, id: i32) ?*AccessibleNode {
+    let i: i32 = 0;
+    while (i < tree.*.nodes.len) {
+        let node: *AccessibleNode = get[*AccessibleNode](tree.*.nodes, i);
+        if (node.*.id == id) { return node; }
+        i = i + 1;
+    }
+    return null;
+}
+
+fn a11y_exists(tree: *AccessibilityTree, id: i32) bool {
+    if (a11y_find(tree, id)) |_| { return true; }
+    return false;
+}
+
+fn a11y_has_state(node: *AccessibleNode, state: i64) bool {
+    return ((node.*.states / state) % 2) == 1;
+}
+
+fn a11y_has_action(node: *AccessibleNode, action: i64) bool {
+    return ((node.*.actions / action) % 2) == 1;
+}
+
+fn a11y_add(tree: *AccessibilityTree, id: i32, parent_id: i32,
+            role: AccessibleRole, name_: []u8, description: []u8, value: []u8,
+            states: i64, actions: i64, tab_index: i32) bool {
+    if (id <= 0 || a11y_exists(tree, id)) {
+        tree.*.error_code = "E_A11Y_DUPLICATE_ID";
+        return false;
+    }
+    if (parent_id != 0 && !a11y_exists(tree, parent_id)) {
+        tree.*.error_code = "E_A11Y_PARENT_MISSING";
+        return false;
+    }
+    if (((states / A11Y_STATE_FOCUSABLE) % 2) == 1 && name_.len == 0) {
+        tree.*.error_code = "E_A11Y_NAME_REQUIRED";
+        return false;
+    }
+    if (tab_index >= 0 && ((states / A11Y_STATE_FOCUSABLE) % 2) == 0) {
+        tree.*.error_code = "E_A11Y_TAB_NOT_FOCUSABLE";
+        return false;
+    }
+    let node: *AccessibleNode = new(AccessibleNode{
+        .id = id, .parent_id = parent_id, .role = role,
+        .name_ = _zag_strdup(name_), .description = _zag_strdup(description),
+        .value = _zag_strdup(value), .states = states, .actions = actions,
+        .tab_index = tab_index, .children = make[i32](8), .activation_count = 0,
+    });
+    push[*AccessibleNode](&tree.*.nodes, node);
+    if (parent_id == 0) {
+        if (tree.*.root_id != 0) {
+            tree.*.error_code = "E_A11Y_MULTIPLE_ROOTS";
+            tree.*.nodes.len = tree.*.nodes.len - 1;
+            return false;
+        }
+        tree.*.root_id = id;
+    } else if (a11y_find(tree, parent_id)) |parent| {
+        push[i32](&parent.*.children, id);
+    }
+    tree.*.generation = tree.*.generation + 1;
+    tree.*.error_code = "";
+    return true;
+}
+
+fn a11y_focus(tree: *AccessibilityTree, id: i32) bool {
+    if (a11y_find(tree, id)) |next| {
+        if (!a11y_has_state(next, A11Y_STATE_VISIBLE) ||
+            !a11y_has_state(next, A11Y_STATE_ENABLED) ||
+            !a11y_has_state(next, A11Y_STATE_FOCUSABLE)) {
+            tree.*.error_code = "E_A11Y_NOT_FOCUSABLE";
+            return false;
+        }
+        if (a11y_find(tree, tree.*.focused_id)) |old| {
+            if (a11y_has_state(old, A11Y_STATE_FOCUSED)) {
+                old.*.states = old.*.states - A11Y_STATE_FOCUSED;
+            }
+        }
+        if (!a11y_has_state(next, A11Y_STATE_FOCUSED)) {
+            next.*.states = next.*.states + A11Y_STATE_FOCUSED;
+        }
+        tree.*.focused_id = id;
+        tree.*.generation = tree.*.generation + 1;
+        tree.*.error_code = "";
+        return true;
+    }
+    tree.*.error_code = "E_A11Y_NODE_MISSING";
+    return false;
+}
+
+fn a11y_focus_step(tree: *AccessibilityTree, backwards: bool) bool {
+    let best_id: i32 = 0;
+    let best_tab: i32 = 2147483647;
+    let wrap_id: i32 = 0;
+    let wrap_tab: i32 = 0 - 2147483647;
+    let current_tab: i32 = 0 - 2147483647;
+    if (a11y_find(tree, tree.*.focused_id)) |current| { current_tab = current.*.tab_index; }
+    let i: i32 = 0;
+    while (i < tree.*.nodes.len) {
+        let node: *AccessibleNode = get[*AccessibleNode](tree.*.nodes, i);
+        if (node.*.tab_index >= 0 && a11y_has_state(node, A11Y_STATE_VISIBLE) &&
+            a11y_has_state(node, A11Y_STATE_ENABLED) && a11y_has_state(node, A11Y_STATE_FOCUSABLE)) {
+            if (!backwards) {
+                if (node.*.tab_index > current_tab && node.*.tab_index < best_tab) {
+                    best_tab = node.*.tab_index; best_id = node.*.id;
+                }
+                if (node.*.tab_index > wrap_tab) { wrap_tab = node.*.tab_index; wrap_id = node.*.id; }
+            } else {
+                if (node.*.tab_index < current_tab && node.*.tab_index > wrap_tab) {
+                    wrap_tab = node.*.tab_index; wrap_id = node.*.id;
+                }
+                if (node.*.tab_index < best_tab) { best_tab = node.*.tab_index; best_id = node.*.id; }
+            }
+        }
+        i = i + 1;
+    }
+    if (!backwards) {
+        if (best_id != 0) { return a11y_focus(tree, best_id); }
+        // Forward wrap goes to the lowest tab index.
+        let low_id: i32 = 0; let low: i32 = 2147483647; let j: i32 = 0;
+        while (j < tree.*.nodes.len) {
+            let n: *AccessibleNode = get[*AccessibleNode](tree.*.nodes, j);
+            if (n.*.tab_index >= 0 && n.*.tab_index < low &&
+                a11y_has_state(n, A11Y_STATE_VISIBLE) && a11y_has_state(n, A11Y_STATE_ENABLED) &&
+                a11y_has_state(n, A11Y_STATE_FOCUSABLE)) { low = n.*.tab_index; low_id = n.*.id; }
+            j = j + 1;
+        }
+        if (low_id != 0) { return a11y_focus(tree, low_id); }
+    } else {
+        if (wrap_id != 0) { return a11y_focus(tree, wrap_id); }
+        // Backward wrap goes to the highest tab index.
+        let high_id: i32 = 0; let high: i32 = 0 - 2147483647; let j: i32 = 0;
+        while (j < tree.*.nodes.len) {
+            let n: *AccessibleNode = get[*AccessibleNode](tree.*.nodes, j);
+            if (n.*.tab_index >= 0 && n.*.tab_index > high &&
+                a11y_has_state(n, A11Y_STATE_VISIBLE) && a11y_has_state(n, A11Y_STATE_ENABLED) &&
+                a11y_has_state(n, A11Y_STATE_FOCUSABLE)) { high = n.*.tab_index; high_id = n.*.id; }
+            j = j + 1;
+        }
+        if (high_id != 0) { return a11y_focus(tree, high_id); }
+    }
+    tree.*.error_code = "E_A11Y_NO_FOCUS_TARGET";
+    return false;
+}
+
+fn a11y_activate(tree: *AccessibilityTree) bool {
+    if (a11y_find(tree, tree.*.focused_id)) |node| {
+        if (!a11y_has_action(node, A11Y_ACTION_ACTIVATE) || !a11y_has_state(node, A11Y_STATE_ENABLED)) {
+            tree.*.error_code = "E_A11Y_ACTION_UNAVAILABLE";
+            return false;
+        }
+        node.*.activation_count = node.*.activation_count + 1;
+        tree.*.generation = tree.*.generation + 1;
+        tree.*.error_code = "";
+        return true;
+    }
+    tree.*.error_code = "E_A11Y_NO_FOCUS";
+    return false;
+}
+
+fn a11y_set_text(tree: *AccessibilityTree, text: []u8) bool {
+    if (a11y_find(tree, tree.*.focused_id)) |node| {
+        if (!a11y_has_action(node, A11Y_ACTION_SET_TEXT) ||
+            !a11y_has_state(node, A11Y_STATE_EDITABLE) || !a11y_has_state(node, A11Y_STATE_ENABLED)) {
+            tree.*.error_code = "E_A11Y_TEXT_UNAVAILABLE";
+            return false;
+        }
+        node.*.value = _zag_strdup(text);
+        tree.*.generation = tree.*.generation + 1;
+        tree.*.error_code = "";
+        return true;
+    }
+    tree.*.error_code = "E_A11Y_NO_FOCUS";
+    return false;
+}
+
+fn a11y_shell_tree() AccessibilityTree {
+    let tree: AccessibilityTree = a11y_tree();
+    let shown: i64 = A11Y_STATE_VISIBLE | A11Y_STATE_ENABLED;
+    let target: i64 = shown | A11Y_STATE_FOCUSABLE;
+    a11y_add(&tree, 1, 0, AccessibleRole.application, "Koryphaios", "Native agent workspace", "", shown, 0, 0 - 1);
+    a11y_add(&tree, 2, 1, AccessibleRole.frame, "Workspace", "", "", shown, 0, 0 - 1);
+    a11y_add(&tree, 3, 2, AccessibleRole.panel, "Sessions", "Session navigation", "", shown, 0, 0 - 1);
+    a11y_add(&tree, 4, 3, AccessibleRole.push_button, "New session", "Create a session", "", target, A11Y_ACTION_ACTIVATE, 0);
+    a11y_add(&tree, 5, 3, AccessibleRole.list, "Session list", "", "", shown, 0, 0 - 1);
+    a11y_add(&tree, 6, 5, AccessibleRole.list_item, "Current session", "Selected session", "", target, A11Y_ACTION_ACTIVATE, 1);
+    a11y_add(&tree, 7, 2, AccessibleRole.document_text, "Conversation", "Message feed", "", shown, 0, 0 - 1);
+    a11y_add(&tree, 8, 2, AccessibleRole.entry, "Message", "Write a message", "",
+        target | A11Y_STATE_EDITABLE | A11Y_STATE_MULTILINE, A11Y_ACTION_SET_TEXT, 2);
+    a11y_add(&tree, 9, 2, AccessibleRole.push_button, "Send", "Send message", "", target, A11Y_ACTION_ACTIVATE, 3);
+    a11y_add(&tree, 10, 2, AccessibleRole.status, "Application status", "", "Ready", shown, 0, 0 - 1);
+    return tree;
+}
+
+enum AtspiBusState {
+    disconnected,
+    session_authenticated,
+    address_requested,
+    accessibility_bus_connected,
+    object_server_ready,
+    registered,
+    protocol_error,
+}
+
+struct AtspiEndpoint {
+    state: AtspiBusState,
+    error_code: []u8,
+    serial: i64,
+}
+
+fn atspi_endpoint() AtspiEndpoint {
+    return AtspiEndpoint{ .state = AtspiBusState.disconnected, .error_code = "", .serial = 1 };
+}
+
+fn atspi_transition(endpoint: *AtspiEndpoint, next: AtspiBusState) bool {
+    let current: AtspiBusState = endpoint.*.state;
+    let valid: bool =
+        (current == AtspiBusState.disconnected && next == AtspiBusState.session_authenticated) ||
+        (current == AtspiBusState.session_authenticated && next == AtspiBusState.address_requested) ||
+        (current == AtspiBusState.address_requested && next == AtspiBusState.accessibility_bus_connected) ||
+        (current == AtspiBusState.accessibility_bus_connected && next == AtspiBusState.object_server_ready) ||
+        (current == AtspiBusState.object_server_ready && next == AtspiBusState.registered);
+    if (!valid) {
+        endpoint.*.state = AtspiBusState.protocol_error;
+        endpoint.*.error_code = "E_ATSPI_STATE";
+        return false;
+    }
+    endpoint.*.state = next;
+    endpoint.*.error_code = "";
+    return true;
+}
+
+fn atspi_is_registered(endpoint: *AtspiEndpoint) bool {
+    return endpoint.*.state == AtspiBusState.registered;
+}
+
+fn atspi_u32(out: *ArrayList[u8], value: i64) void {
+    push[u8](out, (value & 255) as u8); push[u8](out, ((value >> 8) & 255) as u8);
+    push[u8](out, ((value >> 16) & 255) as u8); push[u8](out, ((value >> 24) & 255) as u8);
+}
+
+fn atspi_bytes(out: *ArrayList[u8], value: []u8) void {
+    let i: i32 = 0; while (i < value.len) { push[u8](out, value[i]); i = i + 1; }
+}
+
+fn atspi_pad(out: *ArrayList[u8], alignment: i32) void {
+    while ((out.*.len % alignment) != 0) { push[u8](out, 0 as u8); }
+}
+
+fn atspi_header_text(out: *ArrayList[u8], code: i32, kind: u8, value: []u8) void {
+    atspi_pad(out, 8); push[u8](out, code as u8);
+    push[u8](out, 1 as u8); push[u8](out, kind); push[u8](out, 0 as u8);
+    atspi_pad(out, 4); atspi_u32(out, value.len as i64); atspi_bytes(out, value); push[u8](out, 0 as u8);
+}
+
+// Session-bus discovery call required by AT-SPI.  Encoding the request does
+// not advance endpoint state; only a validated D-Bus reply may do that.
+fn atspi_encode_get_address(serial: i64) []u8 {
+    let out: ArrayList[u8] = make[u8](256);
+    push[u8](&out, 'l' as u8); push[u8](&out, 1 as u8); push[u8](&out, 0 as u8); push[u8](&out, 1 as u8);
+    atspi_u32(&out, 0); atspi_u32(&out, serial); atspi_u32(&out, 0);
+    let start: i32 = out.len;
+    atspi_header_text(&out, 1, 'o' as u8, "/org/a11y/bus");
+    atspi_header_text(&out, 2, 's' as u8, "org.a11y.Bus");
+    atspi_header_text(&out, 3, 's' as u8, "GetAddress");
+    atspi_header_text(&out, 6, 's' as u8, "org.a11y.Bus");
+    let length: i64 = (out.len - start) as i64;
+    out.data[12] = (length & 255) as u8; out.data[13] = ((length >> 8) & 255) as u8;
+    out.data[14] = ((length >> 16) & 255) as u8; out.data[15] = ((length >> 24) & 255) as u8;
+    atspi_pad(&out, 8);
+    return out.data[0..out.len];
+}

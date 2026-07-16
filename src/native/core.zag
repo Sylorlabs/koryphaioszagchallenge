@@ -3,6 +3,7 @@
 
 @import("contract.zag")
 @import("../backend/store.zag")
+@import("provider_codex.zag")
 
 struct ProviderIdentity {
     id: []u8,
@@ -38,6 +39,16 @@ struct AppCore {
     test_provider_enabled: bool,
     selected_provider_id: []u8,
     cli_run: ?*CliRun,
+    codex_run: ?*CodexRun,
+    codex_auth_run: ?*CodexAuthRun,
+    codex_session_id: []u8,
+    codex_event_seen: i32,
+    codex_assistant_text: []u8,
+    codex_input_tokens: i64,
+    codex_output_tokens: i64,
+    codex_usage_known: bool,
+    codex_started_ms: i64,
+    codex_timed_out: bool,
     memory_text: []u8,
     rules_text: []u8,
     ready: bool,
@@ -138,6 +149,11 @@ fn core_refresh_providers(core: *AppCore, path_env: []u8) i32 {
                 provider.*.detected_path = path;
                 if (str_eq(provider.*.id, "cline")) {
                     provider.*.authenticated = core_cline_authenticated(_zag_getenv("HOME"));
+                } else if (str_eq(provider.*.id, "codex") && !core.*.test_provider_enabled && core.*.codex_auth_run == null) {
+                    let nonce: []u8 = util_nanoid(8);
+                    let auth_out: []u8 = _zag_str_concat(core.*.data_dir, _zag_str_concat("/codex-auth-", _zag_str_concat(nonce, ".out")));
+                    let auth_err: []u8 = _zag_str_concat(core.*.data_dir, _zag_str_concat("/codex-auth-", _zag_str_concat(nonce, ".err")));
+                    core.*.codex_auth_run = codex_spawn_auth_status(path, auth_out, auth_err);
                 }
                 found = found + 1;
             }
@@ -236,6 +252,16 @@ fn core_open_mode(data_dir: []u8, test_provider_enabled: bool) *AppCore {
         .test_provider_enabled = test_provider_enabled,
         .selected_provider_id = "",
         .cli_run = null,
+        .codex_run = null,
+        .codex_auth_run = null,
+        .codex_session_id = "",
+        .codex_event_seen = 0,
+        .codex_assistant_text = "",
+        .codex_input_tokens = 0,
+        .codex_output_tokens = 0,
+        .codex_usage_known = false,
+        .codex_started_ms = 0,
+        .codex_timed_out = false,
         .memory_text = "",
         .rules_text = "",
         .ready = false,
@@ -306,6 +332,20 @@ fn core_cline_line(core: *AppCore, run: *CliRun, line: []u8) void {
     }
 }
 
+fn core_cline_ingest(core: *AppCore, run: *CliRun, raw: []u8) void {
+    if (raw.len <= run.*.seen_bytes) { return; }
+    let chunk: []u8 = _zag_str_concat(run.*.pending_line, raw[run.*.seen_bytes..]);
+    run.*.seen_bytes = raw.len;
+    run.*.pending_line = "";
+    let rest: []u8 = chunk;
+    let parsing: bool = true;
+    while (parsing) {
+        let part: SplitResult = str_split_first(rest, '\n' as u8);
+        if (!part.found) { run.*.pending_line = _zag_strdup(rest); parsing = false; }
+        else { core_cline_line(core, run, part.head); rest = part.tail; }
+    }
+}
+
 fn core_finish_cli(core: *AppCore, run: *CliRun, exit_code: i32, raw: []u8) void {
     if (run.*.timed_out) {
         core_event(core, AppEventKind.command_rejected, run.*.session_id, "Cline exceeded the 300 second turn limit.", "E_PROVIDER_TIMEOUT");
@@ -340,41 +380,114 @@ fn core_finish_cli(core: *AppCore, run: *CliRun, exit_code: i32, raw: []u8) void
     core.*.cli_run = null;
 }
 
+fn core_finish_codex(core: *AppCore, run: *CodexRun) void {
+    let sid: []u8 = core.*.codex_session_id;
+    if (core.*.codex_timed_out) {
+        core_event(core, AppEventKind.command_rejected, sid, "Codex exceeded the 300 second turn limit.", "E_PROVIDER_TIMEOUT");
+        core_event(core, AppEventKind.agent_status, sid, "error", "");
+    } else if (run.*.cancelled) {
+        if (core.*.codex_assistant_text.len > 0) {
+            core.*.codex_assistant_text = _zag_str_concat(core.*.codex_assistant_text, "\n\nStopped by user.");
+        }
+        core_event(core, AppEventKind.agent_status, sid, "cancelled", "");
+    } else if (run.*.exit_code != 0 && core.*.codex_assistant_text.len == 0) {
+        core_event(core, AppEventKind.command_rejected, sid,
+            _zag_str_concat("Codex exited with status ", _zag_i64_to_str(run.*.exit_code as i64)), "E_PROVIDER_EXIT");
+        core_event(core, AppEventKind.agent_status, sid, "error", "");
+    }
+    if (core.*.codex_assistant_text.len > 0) {
+        if (store_find(core.*.store, sid)) |session| {
+            let input_tokens: i64 = 0;
+            let output_tokens: i64 = 0;
+            if (core.*.codex_usage_known) {
+                input_tokens = core.*.codex_input_tokens;
+                output_tokens = core.*.codex_output_tokens;
+            }
+            let serialized: []u8 = message_json(util_nanoid(12), session.*.id, "assistant",
+                core.*.codex_assistant_text, "codex-cli", "codex", input_tokens, output_tokens, 0, util_now_ms());
+            store_append_message(core.*.store, session.*.id, serialized);
+            session.*.message_count = session.*.message_count + 1;
+            store_touch(core.*.store, session);
+            core_event(core, AppEventKind.assistant_added, session.*.id, core.*.codex_assistant_text, "");
+        }
+    }
+    if (!run.*.cancelled && !core.*.codex_timed_out && run.*.exit_code == 0) {
+        core_event(core, AppEventKind.agent_status, sid, "done", "");
+    }
+    util_unlink(run.*.stdout_path);
+    util_unlink(run.*.stderr_path);
+    core.*.codex_run = null;
+    core.*.codex_session_id = "";
+}
+
 fn core_tick(core: *AppCore) void {
+    if (core.*.codex_auth_run) |auth| {
+        codex_auth_tick(auth);
+        if (auth.*.finished) {
+            if (core_find_provider(core, "codex")) |provider| { provider.*.authenticated = auth.*.authenticated; }
+            core_event(core, AppEventKind.provider_changed, "", "codex-auth-refreshed", "");
+            util_unlink(auth.*.stdout_path);
+            util_unlink(auth.*.stderr_path);
+            core.*.codex_auth_run = null;
+        }
+    }
     if (core.*.cli_run) |run| {
         if (!run.*.cancelled && !run.*.timed_out && util_now_ms() - run.*.started_ms > 300000) {
             run.*.timed_out = true;
             util_kill_child(run.*.pid);
         }
         let raw: []u8 = util_read_or_empty(run.*.output_path);
-        if (raw.len > run.*.seen_bytes) {
-            let chunk: []u8 = _zag_str_concat(run.*.pending_line, raw[run.*.seen_bytes..]);
-            run.*.seen_bytes = raw.len;
-            let rest: []u8 = chunk;
-            let parsing: bool = true;
-            while (parsing) {
-                let part: SplitResult = str_split_first(rest, '\n' as u8);
-                if (!part.found) { run.*.pending_line = _zag_strdup(rest); parsing = false; }
-                else { core_cline_line(core, run, part.head); rest = part.tail; }
-            }
-        }
+        core_cline_ingest(core, run, raw);
         let exit_code: i32 = util_poll_child(run.*.pid);
         if (exit_code >= 0) {
+            // The child may append its final JSONL record immediately before
+            // exit. Re-read after waitpid so completion cannot race file I/O.
+            let final_raw: []u8 = util_read_or_empty(run.*.output_path);
+            core_cline_ingest(core, run, final_raw);
             if (run.*.pending_line.len > 0) { core_cline_line(core, run, run.*.pending_line); }
-            core_finish_cli(core, run, exit_code, raw);
+            core_finish_cli(core, run, exit_code, final_raw);
         }
+    }
+    if (core.*.codex_run) |run| {
+        if (!run.*.cancelled && !core.*.codex_timed_out && util_now_ms() - core.*.codex_started_ms > 300000) {
+            core.*.codex_timed_out = true;
+            codex_cancel(run);
+        }
+        codex_tick(run);
+        while (core.*.codex_event_seen < run.*.events.len) {
+            let event: *CodexEvent = get[*CodexEvent](run.*.events, core.*.codex_event_seen);
+            core.*.codex_event_seen = core.*.codex_event_seen + 1;
+            if (event.*.kind == CodexEventKind.assistant_message) {
+                core.*.codex_assistant_text = _zag_str_concat(core.*.codex_assistant_text, event.*.text);
+                core_event(core, AppEventKind.stream_delta, core.*.codex_session_id, event.*.text, "");
+            } else if (event.*.kind == CodexEventKind.usage && event.*.usage_known) {
+                core.*.codex_input_tokens = event.*.input_tokens;
+                core.*.codex_output_tokens = event.*.output_tokens;
+                core.*.codex_usage_known = true;
+            } else if (event.*.kind == CodexEventKind.provider_activity) {
+                core_event(core, AppEventKind.agent_status, core.*.codex_session_id, event.*.text, "");
+            } else if (event.*.kind == CodexEventKind.provider_error) {
+                core_event(core, AppEventKind.command_rejected, core.*.codex_session_id, event.*.text, "E_PROVIDER_STREAM");
+            } else if (event.*.kind == CodexEventKind.stderr_text) {
+                core_event(core, AppEventKind.agent_status, core.*.codex_session_id,
+                    _zag_str_concat("Codex stderr: ", event.*.text), "");
+            }
+        }
+        if (run.*.finished) { core_finish_codex(core, run); }
     }
 }
 
 fn core_cli_running(core: *AppCore) bool {
     if (core.*.cli_run) |_run| { return true; }
+    if (core.*.codex_run) |_run| { return true; }
     return false;
 }
 
 fn core_can_send(core: *AppCore) bool {
     if (core.*.test_provider_enabled) { return true; }
     if (core_find_provider(core, core.*.selected_provider_id)) |provider| {
-        return str_eq(provider.*.id, "cline") && provider.*.available && provider.*.authenticated;
+        return (str_eq(provider.*.id, "cline") || str_eq(provider.*.id, "codex")) &&
+            provider.*.available && provider.*.authenticated;
     }
     return false;
 }
@@ -446,17 +559,25 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
             if (core.*.selected_provider_id.len == 0) {
                 return core_reject(core, cmd, "E_PROVIDER_REQUIRED", "No executable model provider is selected. Open Settings and connect a provider before sending.");
             }
-            if (core.*.cli_run) |_running| { return core_reject(core, cmd, "E_PROVIDER_BUSY", "The selected provider is already running a turn."); }
+            if (core_cli_running(core)) { return core_reject(core, cmd, "E_PROVIDER_BUSY", "The selected provider is already running a turn."); }
             let selected: ?*ProviderIdentity = core_find_provider(core, core.*.selected_provider_id);
             if (selected) |provider| {
-                if (!provider.*.available || !str_eq(provider.*.id, "cline")) {
+                if (!provider.*.available || (!str_eq(provider.*.id, "cline") && !str_eq(provider.*.id, "codex"))) {
                     return core_reject(core, cmd, "E_PROVIDER_EXECUTOR_UNAVAILABLE", "This provider does not yet have a verified native executor.");
                 }
-                cli_output = _zag_str_concat(core.*.data_dir, _zag_str_concat("/cline-", _zag_str_concat(util_nanoid(8), ".jsonl")));
-                util_write_atomic(cli_output, "");
-                let cwd: []u8 = ".";
-                cli_pid = native_spawn_cline(provider.*.detected_path, cmd.*.payload, cwd, cli_output);
-                if (cli_pid < 0) { return core_reject(core, cmd, "E_PROVIDER_SPAWN", "Cline could not be started."); }
+                if (str_eq(provider.*.id, "cline")) {
+                    cli_output = _zag_str_concat(core.*.data_dir, _zag_str_concat("/cline-", _zag_str_concat(util_nanoid(8), ".jsonl")));
+                    util_write_atomic(cli_output, "");
+                    cli_pid = native_spawn_cline(provider.*.detected_path, cmd.*.payload, ".", cli_output);
+                    if (cli_pid < 0) { return core_reject(core, cmd, "E_PROVIDER_SPAWN", "Cline could not be started."); }
+                } else {
+                    let nonce: []u8 = util_nanoid(8);
+                    let stdout_path: []u8 = _zag_str_concat(core.*.data_dir, _zag_str_concat("/codex-", _zag_str_concat(nonce, ".jsonl")));
+                    let stderr_path: []u8 = _zag_str_concat(core.*.data_dir, _zag_str_concat("/codex-", _zag_str_concat(nonce, ".stderr")));
+                    let codex: *CodexRun = codex_spawn(provider.*.detected_path, cmd.*.payload, ".", "", stdout_path, stderr_path);
+                    if (codex.*.pid < 0) { return core_reject(core, cmd, "E_PROVIDER_SPAWN", "Codex could not be started."); }
+                    core.*.codex_run = codex;
+                }
             } else { return core_reject(core, cmd, "E_PROVIDER_REQUIRED", "The selected provider no longer exists."); }
         }
         if (store_find(core.*.store, core.*.active_session_id)) |session| {
@@ -468,10 +589,21 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
             store_touch(core.*.store, session);
             core_event(core, AppEventKind.message_added, session.*.id, cmd.*.payload, "");
             if (!core.*.test_provider_enabled) {
-                core.*.cli_run = new(CliRun{ .pid = cli_pid, .session_id = _zag_strdup(session.*.id),
-                    .provider_id = "cline", .output_path = cli_output, .seen_bytes = 0,
-                    .pending_line = "", .assistant_text = "", .last_snapshot = "", .cancelled = false,
-                    .timed_out = false, .started_ms = util_now_ms() });
+                if (str_eq(core.*.selected_provider_id, "cline")) {
+                    core.*.cli_run = new(CliRun{ .pid = cli_pid, .session_id = _zag_strdup(session.*.id),
+                        .provider_id = "cline", .output_path = cli_output, .seen_bytes = 0,
+                        .pending_line = "", .assistant_text = "", .last_snapshot = "", .cancelled = false,
+                        .timed_out = false, .started_ms = util_now_ms() });
+                } else {
+                    core.*.codex_session_id = _zag_strdup(session.*.id);
+                    core.*.codex_event_seen = 0;
+                    core.*.codex_assistant_text = "";
+                    core.*.codex_input_tokens = 0;
+                    core.*.codex_output_tokens = 0;
+                    core.*.codex_usage_known = false;
+                    core.*.codex_started_ms = util_now_ms();
+                    core.*.codex_timed_out = false;
+                }
                 core_event(core, AppEventKind.agent_status, session.*.id, "thinking", "");
                 return true;
             }
@@ -500,8 +632,14 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
     if (cmd.*.kind == AppCommandKind.provider_select) {
         if (core_find_provider(core, cmd.*.payload)) |provider| {
             if (!provider.*.available) { return core_reject(core, cmd, "E_PROVIDER_UNAVAILABLE", "The provider executable is unavailable."); }
-            if (!str_eq(provider.*.id, "cline")) { return core_reject(core, cmd, "E_PROVIDER_EXECUTOR_UNAVAILABLE", "This CLI executor is not implemented yet."); }
-            if (!provider.*.authenticated) { return core_reject(core, cmd, "E_PROVIDER_AUTH", "Cline is not authenticated. Run cline auth, then refresh providers."); }
+            if (!str_eq(provider.*.id, "cline") && !str_eq(provider.*.id, "codex")) {
+                return core_reject(core, cmd, "E_PROVIDER_EXECUTOR_UNAVAILABLE", "This CLI executor is not implemented yet.");
+            }
+            if (!provider.*.authenticated) {
+                let guidance: []u8 = "Cline is not authenticated. Run cline auth, then refresh providers.";
+                if (str_eq(provider.*.id, "codex")) { guidance = "Codex is not authenticated. Run codex login, then refresh providers."; }
+                return core_reject(core, cmd, "E_PROVIDER_AUTH", guidance);
+            }
             let previous: []u8 = core.*.selected_provider_id;
             core.*.selected_provider_id = _zag_strdup(provider.*.id);
             if (!core_save_settings(core)) {
@@ -546,6 +684,7 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
         return true;
     }
     if (cmd.*.kind == AppCommandKind.message_cancel) {
+        if (core.*.codex_run) |run| { return codex_cancel(run); }
         if (core.*.cli_run) |run| {
             run.*.cancelled = true;
             util_kill_child(run.*.pid);

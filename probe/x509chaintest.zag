@@ -1,0 +1,173 @@
+// Deterministic tests for bounded trust-store and fail-closed chain handling.
+// Build/run:
+//   toolchain/zag/zag-poc/znc probe/x509chaintest.zag -o build/x509chaintest --analyze-strict --run
+
+@import("../src/zrt/x509_chain.zag")
+
+struct ChainTestCtx { total: i32, failed: i32 }
+
+fn cht_ok(ctx: *ChainTestCtx, cond: bool, name: []u8) void {
+    ctx.*.total = ctx.*.total + 1;
+    if (cond) { _zag_print("PASS "); _zag_println(name); }
+    else { ctx.*.failed = ctx.*.failed + 1; _zag_print("FAIL "); _zag_println(name); }
+}
+
+fn cht_add(out: *ArrayList[u8], value: []u8) void {
+    let i: i32 = 0;
+    while (i < value.len) { push[u8](out, value[i]); i = i + 1; }
+}
+
+fn cht_wrap(tag: i32, body: []u8) []u8 {
+    let out: ArrayList[u8] = make[u8](body.len + 4);
+    push[u8](&out, tag as u8);
+    if (body.len < 128) { push[u8](&out, body.len as u8); }
+    else if (body.len < 256) { push[u8](&out, 129); push[u8](&out, body.len as u8); }
+    else {
+        push[u8](&out, 130);
+        push[u8](&out, ((body.len >> 8) & 255) as u8);
+        push[u8](&out, (body.len & 255) as u8);
+    }
+    cht_add(&out, body);
+    return out.data[0..out.len];
+}
+
+fn cht_name(letter: u8) []u8 {
+    let body: ArrayList[u8] = make[u8](4);
+    push[u8](&body, 12); push[u8](&body, 1); push[u8](&body, letter);
+    return cht_wrap(48, body.data[0..body.len]);
+}
+
+fn cht_extension(oid_tail: u8, critical: bool, nested_der: []u8) []u8 {
+    let body: ArrayList[u8] = make[u8](nested_der.len + 16);
+    let oid_raw: ArrayList[u8] = make[u8](3);
+    push[u8](&oid_raw, 85); push[u8](&oid_raw, 29); push[u8](&oid_raw, oid_tail);
+    cht_add(&body, cht_wrap(6, oid_raw.data[0..oid_raw.len]));
+    if (critical) { cht_add(&body, "\x01\x01\xff"); }
+    cht_add(&body, cht_wrap(4, nested_der));
+    return cht_wrap(48, body.data[0..body.len]);
+}
+
+fn cht_cert(issuer: []u8, subject: []u8, not_before: []u8, not_after: []u8,
+            include_basic: bool, ca: bool, usage: i32, unknown_critical: bool) []u8 {
+    let validity_body: ArrayList[u8] = make[u8](32);
+    cht_add(&validity_body, cht_wrap(23, not_before));
+    cht_add(&validity_body, cht_wrap(23, not_after));
+    let validity: []u8 = cht_wrap(48, validity_body.data[0..validity_body.len]);
+    let extensions_body: ArrayList[u8] = make[u8](64);
+    if (include_basic) {
+        let bc_body: ArrayList[u8] = make[u8](4);
+        if (ca) { cht_add(&bc_body, "\x01\x01\xff"); }
+        let bc: []u8 = cht_wrap(48, bc_body.data[0..bc_body.len]);
+        cht_add(&extensions_body, cht_extension(19, true, bc));
+    }
+    if (usage >= 0) {
+        let ku: ArrayList[u8] = make[u8](4);
+        push[u8](&ku, 3); push[u8](&ku, 2); push[u8](&ku, 1); push[u8](&ku, usage as u8);
+        cht_add(&extensions_body, cht_extension(15, true, ku.data[0..ku.len]));
+    }
+    if (unknown_critical) { cht_add(&extensions_body, cht_extension(99, true, "\x05\x00")); }
+    let optional: []u8 = "";
+    if (extensions_body.len > 0) {
+        optional = cht_wrap(163, cht_wrap(48, extensions_body.data[0..extensions_body.len]));
+    }
+    let algorithm: []u8 = "\x30\x03\x06\x01\x2a";
+    let tbs_body: ArrayList[u8] = make[u8](160);
+    cht_add(&tbs_body, cht_wrap(160, "\x02\x01\x02"));
+    cht_add(&tbs_body, "\x02\x01\x01");
+    cht_add(&tbs_body, algorithm);
+    cht_add(&tbs_body, issuer);
+    cht_add(&tbs_body, validity);
+    cht_add(&tbs_body, subject);
+    cht_add(&tbs_body, "\x30\x00");
+    cht_add(&tbs_body, optional);
+    let tbs: []u8 = cht_wrap(48, tbs_body.data[0..tbs_body.len]);
+    let cert_body: ArrayList[u8] = make[u8](tbs.len + 16);
+    cht_add(&cert_body, tbs);
+    cht_add(&cert_body, algorithm);
+    cht_add(&cert_body, "\x03\x02\x00\x01");
+    return cht_wrap(48, cert_body.data[0..cert_body.len]);
+}
+
+fn cht_pem(cert: []u8) []u8 {
+    let encoded: []u8 = b64_encode(cert);
+    return _zag_str_concat("-----BEGIN CERTIFICATE-----\n",
+        _zag_str_concat(encoded, "\n-----END CERTIFICATE-----\n"));
+}
+
+fn cht_store_one(cert: []u8) X509TrustStore {
+    return x509_trust_load_pem(cht_pem(cert), "deterministic-test");
+}
+
+fn main() i32 {
+    let ctx: ChainTestCtx = ChainTestCtx{ .total = 0, .failed = 0 };
+    let root_name: []u8 = cht_name('R' as u8);
+    let leaf_name: []u8 = cht_name('L' as u8);
+    let root: []u8 = cht_cert(root_name, root_name, "250101000000Z", "300101000000Z", true, true, 4, false);
+    let leaf: []u8 = cht_cert(root_name, leaf_name, "260101000000Z", "270101000000Z", false, false, -1, false);
+
+    let root_meta: X509CertMeta = x509_chain_parse_cert(root);
+    cht_ok(&ctx, root_meta.ok && root_meta.is_ca && root_meta.key_cert_sign,
+        "CA metadata and keyCertSign parse");
+    cht_ok(&ctx, x509_chain_bytes_eq(root_meta.issuer_der, root_meta.subject_der),
+        "self-issued name representation is exact DER");
+
+    let store: X509TrustStore = cht_store_one(root);
+    cht_ok(&ctx, store.status == X509TrustStatus.ok && store.anchors.len == 1 && store.rejected == 0,
+        "bounded PEM trust store loads one usable anchor");
+    let candidate: X509ChainCheck = x509_chain_check_direct(leaf, &store, 1780000000);
+    cht_ok(&ctx, candidate.status == X509ChainStatus.signature_verification_unavailable &&
+        candidate.candidates == 1 && candidate.constraints_ok,
+        "valid direct issuer candidate passes structural constraints");
+    cht_ok(&ctx, !candidate.signatures_ok && !candidate.authenticated,
+        "candidate never becomes authenticated without signature verification");
+
+    let nonca: []u8 = cht_cert(root_name, root_name, "250101000000Z", "300101000000Z", true, false, -1, false);
+    let nonca_store: X509TrustStore = cht_store_one(nonca);
+    cht_ok(&ctx, x509_chain_check_direct(leaf, &nonca_store, 1780000000).status == X509ChainStatus.issuer_not_ca,
+        "issuer with CA false is rejected");
+    let wrong_usage: []u8 = cht_cert(root_name, root_name, "250101000000Z", "300101000000Z", true, true, 128, false);
+    let usage_store: X509TrustStore = cht_store_one(wrong_usage);
+    cht_ok(&ctx, x509_chain_check_direct(leaf, &usage_store, 1780000000).status == X509ChainStatus.issuer_key_usage_invalid,
+        "issuer key usage without keyCertSign is rejected");
+    let expired_root: []u8 = cht_cert(root_name, root_name, "200101000000Z", "210101000000Z", true, true, 4, false);
+    let expired_store: X509TrustStore = cht_store_one(expired_root);
+    cht_ok(&ctx, x509_chain_check_direct(leaf, &expired_store, 1780000000).status == X509ChainStatus.issuer_time_invalid,
+        "expired issuer is rejected");
+    let critical_root: []u8 = cht_cert(root_name, root_name, "250101000000Z", "300101000000Z", true, true, 4, true);
+    let critical_store: X509TrustStore = cht_store_one(critical_root);
+    cht_ok(&ctx, x509_chain_check_direct(leaf, &critical_store, 1780000000).status == X509ChainStatus.unsupported_critical_extension,
+        "unknown critical issuer extension is rejected");
+
+    let other_name: []u8 = cht_name('X' as u8);
+    let other: []u8 = cht_cert(other_name, other_name, "250101000000Z", "300101000000Z", true, true, 4, false);
+    let other_store: X509TrustStore = cht_store_one(other);
+    cht_ok(&ctx, x509_chain_check_direct(leaf, &other_store, 1780000000).status == X509ChainStatus.no_issuer,
+        "unrelated trust anchor is not an issuer candidate");
+    cht_ok(&ctx, x509_chain_check_direct(leaf, &store, 1800000000).status == X509ChainStatus.leaf_time_invalid,
+        "expired leaf is rejected before chain selection");
+    cht_ok(&ctx, !x509_chain_parse_cert(root[0..root.len - 1]).ok,
+        "truncated CA certificate is rejected");
+
+    let bad_pem: X509TrustStore = x509_trust_load_pem("-----BEGIN CERTIFICATE-----\nAAAA", "bad");
+    cht_ok(&ctx, bad_pem.status == X509TrustStatus.malformed_pem && bad_pem.anchors.len == 0,
+        "unterminated PEM is rejected");
+    cht_ok(&ctx, x509_chain_check_direct(leaf, &bad_pem, 1780000000).status == X509ChainStatus.trust_store_invalid,
+        "invalid trust store cannot supply candidates");
+    let invalid_b64: X509TrustStore = x509_trust_load_pem(
+        "-----BEGIN CERTIFICATE-----\nAA=A\n-----END CERTIFICATE-----\n", "bad-b64");
+    cht_ok(&ctx, invalid_b64.status == X509TrustStatus.no_usable_anchors && invalid_b64.rejected == 1,
+        "non-terminal Base64 padding is rejected");
+
+    let system: X509TrustStore = x509_trust_load_system();
+    cht_ok(&ctx, system.status == X509TrustStatus.ok &&
+        system.anchors.len > 0 && system.anchors.len <= X509_CA_ANCHOR_MAX,
+        "release Linux system bundle loads within anchor bound");
+
+    _zag_print("X509 CHAIN TESTS: ");
+    _zag_print(_zag_i64_to_str(ctx.total as i64));
+    _zag_print(" checks, ");
+    _zag_print(_zag_i64_to_str(ctx.failed as i64));
+    _zag_println(" failed");
+    if (ctx.failed == 0) { return 0; }
+    return 1;
+}

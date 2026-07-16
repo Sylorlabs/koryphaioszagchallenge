@@ -26,14 +26,19 @@ Cline is the first production executor. The native core:
 - derives authentication from Cline's own parseable
   `~/.cline/data/secrets.json` without copying its key;
 - persists the selected identity in versioned native settings;
-- invokes `cline -p <prompt> --act --yolo --json` using direct `execve` argv,
-  never `sh -c`;
+- invokes current Cline with explicit `--plan --json --auto-approve false`
+  Basic policy and a positional prompt using direct `execve` argv, never
+  `sh -c`;
 - consumes cumulative NDJSON text snapshots into non-duplicated deltas;
 - polls and reaps the child without blocking the X11 event loop;
 - surfaces capped real stderr and exit status;
 - supports SIGTERM cancellation and a 300-second timeout;
 - persists partial output on cancellation with an explicit stopped marker;
 - reports no token usage unless a provider emits exact usage.
+
+Codex is also integrated through the separate adapter documented in
+`NATIVE_CODEX_PROVIDER.md`; it defaults to the CLI's read-only sandbox and
+derives authentication from `codex login status`.
 
 The remaining CLI/API adapters must meet the same stderr, exit, cancellation,
 authentication, model-availability, and exact-usage contract.

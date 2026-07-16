@@ -1,0 +1,401 @@
+// Bounded system trust-store loading and X.509 chain-candidate foundations.
+//
+// This module parses PEM trust bundles without shelling out, represents the
+// security-relevant issuer fields, and enforces bounded time/basic-constraints/
+// key-usage policy while selecting issuer candidates.  It deliberately does
+// NOT authenticate a chain: certificate signature verification is not yet
+// implemented, so every candidate result remains fail-closed.
+
+@import("x509.zag")
+@import("base64.zag")
+
+const X509_CA_FILE_MAX: i32 = 16777216;
+const X509_CA_CERT_MAX: i32 = 1048576;
+const X509_CA_ANCHOR_MAX: i32 = 1024;
+
+enum X509TrustStatus {
+    ok,
+    unavailable,
+    file_too_large,
+    malformed_pem,
+    no_usable_anchors,
+}
+
+enum X509ChainStatus {
+    trust_store_invalid,
+    invalid_leaf,
+    leaf_time_invalid,
+    no_issuer,
+    issuer_time_invalid,
+    issuer_not_ca,
+    issuer_key_usage_invalid,
+    unsupported_critical_extension,
+    signature_verification_unavailable,
+}
+
+struct X509CertMeta {
+    der: []u8,
+    tbs_der: []u8,
+    issuer_der: []u8,
+    subject_der: []u8,
+    spki_der: []u8,
+    signature_algorithm_der: []u8,
+    signature_bits: []u8,
+    not_before: i64,
+    not_after: i64,
+    basic_constraints_present: bool,
+    is_ca: bool,
+    key_usage_present: bool,
+    key_cert_sign: bool,
+    unsupported_critical: bool,
+    ok: bool,
+}
+
+struct X509TrustAnchor {
+    cert: X509CertMeta,
+}
+
+struct X509TrustStore {
+    anchors: ArrayList[X509TrustAnchor],
+    source: []u8,
+    status: X509TrustStatus,
+    rejected: i32,
+}
+
+struct X509ChainCheck {
+    status: X509ChainStatus,
+    candidates: i32,
+    constraints_ok: bool,
+    signatures_ok: bool,
+    authenticated: bool,
+}
+
+fn x509_chain_empty_meta() X509CertMeta {
+    return X509CertMeta{
+        .der = "", .tbs_der = "", .issuer_der = "", .subject_der = "",
+        .spki_der = "", .signature_algorithm_der = "", .signature_bits = "",
+        .not_before = 0, .not_after = 0, .basic_constraints_present = false,
+        .is_ca = false, .key_usage_present = false, .key_cert_sign = false,
+        .unsupported_critical = false, .ok = false,
+    };
+}
+
+fn x509_chain_bytes_eq(a: []u8, b: []u8) bool {
+    if (a.len != b.len) { return false; }
+    let i: i32 = 0;
+    while (i < a.len) { if (a[i] != b[i]) { return false; } i = i + 1; }
+    return true;
+}
+
+fn x509_chain_oid(data: []u8, oid: DerTlv, tail: u8) bool {
+    return oid.ok && oid.tag == 6 && oid.end - oid.body == 3 &&
+        data[oid.body] == 85 && data[oid.body + 1] == 29 && data[oid.body + 2] == tail;
+}
+
+fn x509_chain_bool(data: []u8, tlv: DerTlv) ?bool {
+    if (!tlv.ok || tlv.tag != 1 || tlv.end - tlv.body != 1) { return null; }
+    if (data[tlv.body] == 0) { return false; }
+    if (data[tlv.body] == 255) { return true; }
+    return null;
+}
+
+fn x509_chain_parse_basic(data: []u8, value: DerTlv, out: *X509CertMeta) bool {
+    let seq: DerTlv = der_read(data, value.body, value.end);
+    if (!seq.ok || seq.tag != 48 || seq.next != value.end) { return false; }
+    let p: i32 = seq.body;
+    let ca: bool = false;
+    if (p < seq.end) {
+        let first: DerTlv = der_read(data, p, seq.end);
+        if (!first.ok) { return false; }
+        if (first.tag == 1) {
+            let maybe: ?bool = x509_chain_bool(data, first);
+            if (maybe) |v| { ca = v; } else { return false; }
+            p = first.next;
+        }
+    }
+    // pathLenConstraint is valid only for a CA and must be a non-negative,
+    // minimally encoded INTEGER.  It is parsed now even though path-length
+    // accumulation waits for multi-intermediate chain building.
+    if (p < seq.end) {
+        let path_len: DerTlv = der_read(data, p, seq.end);
+        if (!path_len.ok || path_len.tag != 2 || path_len.end == path_len.body ||
+            (data[path_len.body] & 128) != 0 ||
+            (path_len.end - path_len.body > 1 && data[path_len.body] == 0 && (data[path_len.body + 1] & 128) == 0) || !ca) { return false; }
+        p = path_len.next;
+    }
+    if (p != seq.end) { return false; }
+    out.*.basic_constraints_present = true;
+    out.*.is_ca = ca;
+    return true;
+}
+
+fn x509_chain_parse_key_usage(data: []u8, value: DerTlv, out: *X509CertMeta) bool {
+    let bits: DerTlv = der_read(data, value.body, value.end);
+    if (!bits.ok || bits.tag != 3 || bits.next != value.end || bits.end - bits.body < 2) { return false; }
+    let unused: i32 = (data[bits.body] as i32) & 255;
+    if (unused < 0 || unused > 7) { return false; }
+    let last: u8 = data[bits.end - 1];
+    if (unused > 0 && (((last as i32) & ((1 << unused) - 1)) != 0)) { return false; }
+    out.*.key_usage_present = true;
+    out.*.key_cert_sign = (data[bits.body + 1] & 4) != 0;
+    return true;
+}
+
+fn x509_chain_parse_extensions(cert: []u8, optional: DerTlv, out: *X509CertMeta) bool {
+    let exts: DerTlv = der_read(cert, optional.body, optional.end);
+    if (!exts.ok || exts.tag != 48 || exts.next != optional.end) { return false; }
+    let ep: i32 = exts.body;
+    while (ep < exts.end) {
+        let ext: DerTlv = der_read(cert, ep, exts.end);
+        if (!ext.ok || ext.tag != 48) { return false; }
+        let oid: DerTlv = der_read(cert, ext.body, ext.end);
+        if (!oid.ok || oid.tag != 6) { return false; }
+        let p: i32 = oid.next;
+        let critical: bool = false;
+        let field: DerTlv = der_read(cert, p, ext.end);
+        if (!field.ok) { return false; }
+        if (field.tag == 1) {
+            let maybe: ?bool = x509_chain_bool(cert, field);
+            if (maybe) |v| { critical = v; } else { return false; }
+            p = field.next;
+            field = der_read(cert, p, ext.end);
+        }
+        if (!field.ok || field.tag != 4 || field.next != ext.end) { return false; }
+        let known: bool = false;
+        if (x509_chain_oid(cert, oid, 19)) {
+            known = true;
+            if (out.*.basic_constraints_present || !x509_chain_parse_basic(cert, field, out)) { return false; }
+        } else if (x509_chain_oid(cert, oid, 15)) {
+            known = true;
+            if (out.*.key_usage_present || !x509_chain_parse_key_usage(cert, field, out)) { return false; }
+        }
+        if (critical && !known) { out.*.unsupported_critical = true; }
+        ep = ext.next;
+    }
+    return ep == exts.end;
+}
+
+// Parse certificate fields needed by a chain builder.  Unlike x509_parse_leaf,
+// SAN is not required because CA certificates normally do not contain one.
+fn x509_chain_parse_cert(cert: []u8) X509CertMeta {
+    let out: X509CertMeta = x509_chain_empty_meta();
+    if (cert.len == 0 || cert.len > X509_CA_CERT_MAX) { return out; }
+    let outer: DerTlv = der_read(cert, 0, cert.len);
+    if (!outer.ok || outer.tag != 48 || outer.next != cert.len) { return out; }
+    let tbs: DerTlv = der_read(cert, outer.body, outer.end);
+    let alg: DerTlv = der_read(cert, tbs.next, outer.end);
+    let sig: DerTlv = der_read(cert, alg.next, outer.end);
+    if (!tbs.ok || tbs.tag != 48 || !alg.ok || alg.tag != 48 || !sig.ok || sig.tag != 3 ||
+        sig.next != outer.end || sig.end - sig.body < 2 || cert[sig.body] != 0) { return out; }
+    let p: i32 = tbs.body;
+    let field: DerTlv = der_read(cert, p, tbs.end);
+    if (!field.ok) { return out; }
+    if (field.tag == 160) { p = field.next; }
+    let serial: DerTlv = der_read(cert, p, tbs.end);
+    if (!serial.ok || serial.tag != 2 || serial.end == serial.body) { return out; }
+    p = serial.next;
+    let tbs_alg: DerTlv = der_read(cert, p, tbs.end);
+    if (!tbs_alg.ok || tbs_alg.tag != 48 || !x509_chain_bytes_eq(cert[tbs_alg.start..tbs_alg.next], cert[alg.start..alg.next])) { return out; }
+    p = tbs_alg.next;
+    let issuer: DerTlv = der_read(cert, p, tbs.end);
+    if (!issuer.ok || issuer.tag != 48) { return out; }
+    p = issuer.next;
+    let validity: DerTlv = der_read(cert, p, tbs.end);
+    if (!validity.ok || validity.tag != 48) { return out; }
+    let nb: DerTlv = der_read(cert, validity.body, validity.end);
+    let na: DerTlv = der_read(cert, nb.next, validity.end);
+    if (!nb.ok || !na.ok || na.next != validity.end) { return out; }
+    let not_before: i64 = x509_parse_time(nb.tag, cert[nb.body..nb.end]);
+    let not_after: i64 = x509_parse_time(na.tag, cert[na.body..na.end]);
+    if (not_before < 0 || not_after < not_before) { return out; }
+    p = validity.next;
+    let subject: DerTlv = der_read(cert, p, tbs.end);
+    if (!subject.ok || subject.tag != 48) { return out; }
+    p = subject.next;
+    let spki: DerTlv = der_read(cert, p, tbs.end);
+    if (!spki.ok || spki.tag != 48) { return out; }
+    p = spki.next;
+    while (p < tbs.end) {
+        let optional: DerTlv = der_read(cert, p, tbs.end);
+        if (!optional.ok) { return out; }
+        if (optional.tag == 163) {
+            if (!x509_chain_parse_extensions(cert, optional, &out)) { return out; }
+        } else if (optional.tag != 129 && optional.tag != 130) { return out; }
+        p = optional.next;
+    }
+    out.der = cert;
+    out.tbs_der = cert[tbs.start..tbs.next];
+    out.issuer_der = cert[issuer.start..issuer.next];
+    out.subject_der = cert[subject.start..subject.next];
+    out.spki_der = cert[spki.start..spki.next];
+    out.signature_algorithm_der = cert[alg.start..alg.next];
+    out.signature_bits = cert[sig.body + 1..sig.end];
+    out.not_before = not_before;
+    out.not_after = not_after;
+    out.ok = true;
+    return out;
+}
+
+fn x509_chain_find(data: []u8, needle: []u8, start: i32) i32 {
+    if (needle.len == 0 || start < 0) { return 0 - 1; }
+    let i: i32 = start;
+    while (i <= data.len - needle.len) {
+        let j: i32 = 0;
+        while (j < needle.len && data[i + j] == needle[j]) { j = j + 1; }
+        if (j == needle.len) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn x509_chain_compact_b64(body: []u8) ?[]u8 {
+    let out: ArrayList[u8] = make[u8](body.len);
+    let i: i32 = 0;
+    let padding: bool = false;
+    while (i < body.len) {
+        let c: u8 = body[i];
+        if (c == 32 || c == 9 || c == 10 || c == 13) { i = i + 1; }
+        else {
+            let v: i32 = b64_char_val(c);
+            if (v < 0 && v != 0 - 2) { return null; }
+            if (padding && c != ('=' as u8)) { return null; }
+            if (c == ('=' as u8)) { padding = true; }
+            push[u8](&out, c);
+            i = i + 1;
+        }
+    }
+    if (out.len == 0 || out.len % 4 != 0) { return null; }
+    let pads: i32 = 0;
+    if (out.data[out.len - 1] == ('=' as u8)) { pads = pads + 1; }
+    if (out.len > 1 && out.data[out.len - 2] == ('=' as u8)) { pads = pads + 1; }
+    if (pads > 2) { return null; }
+    let k: i32 = 0;
+    while (k < out.len - pads) { if (out.data[k] == ('=' as u8)) { return null; } k = k + 1; }
+    return out.data[0..out.len];
+}
+
+fn x509_trust_empty(status: X509TrustStatus) X509TrustStore {
+    return X509TrustStore{ .anchors = make[X509TrustAnchor](4), .source = "", .status = status, .rejected = 0 };
+}
+
+fn x509_trust_load_pem(pem: []u8, source: []u8) X509TrustStore {
+    let store: X509TrustStore = x509_trust_empty(X509TrustStatus.malformed_pem);
+    store.source = source;
+    if (pem.len == 0 || pem.len > X509_CA_FILE_MAX) {
+        if (pem.len > X509_CA_FILE_MAX) { store.status = X509TrustStatus.file_too_large; }
+        return store;
+    }
+    let begin: []u8 = "-----BEGIN CERTIFICATE-----";
+    let end: []u8 = "-----END CERTIFICATE-----";
+    let p: i32 = 0;
+    while (p < pem.len) {
+        let b: i32 = x509_chain_find(pem, begin, p);
+        if (b < 0) { break; }
+        let body_start: i32 = b + begin.len;
+        let e: i32 = x509_chain_find(pem, end, body_start);
+        if (e < 0) { store.status = X509TrustStatus.malformed_pem; return store; }
+        if (store.anchors.len >= X509_CA_ANCHOR_MAX) { store.status = X509TrustStatus.file_too_large; return store; }
+        let compact: ?[]u8 = x509_chain_compact_b64(pem[body_start..e]);
+        if (compact) |encoded| {
+            let der: []u8 = b64_decode(encoded);
+            let cert: X509CertMeta = x509_chain_parse_cert(der);
+            if (der.len <= X509_CA_CERT_MAX && cert.ok) {
+                push[X509TrustAnchor](&store.anchors, X509TrustAnchor{ .cert = cert });
+            } else { store.rejected = store.rejected + 1; }
+        } else { store.rejected = store.rejected + 1; }
+        p = e + end.len;
+    }
+    if (store.anchors.len == 0) { store.status = X509TrustStatus.no_usable_anchors; }
+    else { store.status = X509TrustStatus.ok; }
+    return store;
+}
+
+fn x509_chain_cpath(path: []u8) *i8 {
+    let raw: *i8 = _zag_malloc(path.len + 1);
+    _zag_memcpy(raw, _zag_slice_ptr(path), path.len);
+    raw[path.len] = 0 as i8;
+    return raw;
+}
+
+// Read at most max bytes and probe one additional byte, avoiding an unbounded
+// allocation even when a hostile or accidental path points to a huge file.
+fn x509_chain_read_bounded(path: []u8, max: i32) ?[]u8 {
+    let cpath: *i8 = x509_chain_cpath(path);
+    let fd: i64 = _zag_raw_syscall(257, -100, cpath as i64, 0, 0, 0, 0);
+    _zag_free(cpath);
+    if (fd < 0) { return null; }
+    let raw: *i8 = _zag_malloc(max + 1);
+    let used: i32 = 0;
+    let failed: bool = false;
+    while (used < max + 1 && !failed) {
+        let got: i64 = _zag_raw_syscall(0, fd, (raw as i64) + (used as i64), (max + 1 - used) as i64, 0, 0, 0);
+        if (got < 0) { failed = true; }
+        else if (got == 0) { break; }
+        else { used = used + (got as i32); }
+    }
+    _zag_raw_syscall(3, fd, 0, 0, 0, 0, 0);
+    if (failed || used > max) { _zag_free(raw); return null; }
+    return raw[0..used];
+}
+
+fn x509_trust_load_system() X509TrustStore {
+    let path: []u8 = "/etc/ssl/certs/ca-certificates.crt";
+    let raw: ?[]u8 = x509_chain_read_bounded(path, X509_CA_FILE_MAX);
+    if (raw) |pem| { return x509_trust_load_pem(pem, path); }
+    path = "/etc/pki/tls/certs/ca-bundle.crt";
+    raw = x509_chain_read_bounded(path, X509_CA_FILE_MAX);
+    if (raw) |pem| { return x509_trust_load_pem(pem, path); }
+    path = "/etc/ssl/ca-bundle.pem";
+    raw = x509_chain_read_bounded(path, X509_CA_FILE_MAX);
+    if (raw) |pem| { return x509_trust_load_pem(pem, path); }
+    return x509_trust_empty(X509TrustStatus.unavailable);
+}
+
+// Select direct trust-anchor issuer candidates and enforce all constraints
+// this module can currently validate.  A structurally good candidate returns
+// signature_verification_unavailable, never authenticated=true.
+fn x509_chain_check_direct(leaf_der: []u8, store: *X509TrustStore, now_unix: i64) X509ChainCheck {
+    if (store.*.status != X509TrustStatus.ok || store.*.anchors.len == 0) {
+        return X509ChainCheck{ .status = X509ChainStatus.trust_store_invalid, .candidates = 0,
+            .constraints_ok = false, .signatures_ok = false, .authenticated = false };
+    }
+    let leaf: X509CertMeta = x509_chain_parse_cert(leaf_der);
+    if (!leaf.ok || leaf.unsupported_critical) {
+        return X509ChainCheck{ .status = X509ChainStatus.invalid_leaf, .candidates = 0,
+            .constraints_ok = false, .signatures_ok = false, .authenticated = false };
+    }
+    if (now_unix < leaf.not_before || now_unix > leaf.not_after) {
+        return X509ChainCheck{ .status = X509ChainStatus.leaf_time_invalid, .candidates = 0,
+            .constraints_ok = false, .signatures_ok = false, .authenticated = false };
+    }
+    let candidates: i32 = 0;
+    let saw_time: bool = false;
+    let saw_ca: bool = false;
+    let saw_usage: bool = false;
+    let saw_critical: bool = false;
+    let i: i32 = 0;
+    while (i < store.*.anchors.len) {
+        let anchor: X509TrustAnchor = get[X509TrustAnchor](store.*.anchors, i);
+        let cert: X509CertMeta = anchor.cert;
+        if (cert.ok && x509_chain_bytes_eq(leaf.issuer_der, cert.subject_der)) {
+            candidates = candidates + 1;
+            if (cert.unsupported_critical) { saw_critical = true; }
+            else if (now_unix < cert.not_before || now_unix > cert.not_after) { saw_time = true; }
+            else if (cert.basic_constraints_present && !cert.is_ca) { saw_ca = true; }
+            else if (cert.key_usage_present && !cert.key_cert_sign) { saw_usage = true; }
+            else {
+                return X509ChainCheck{ .status = X509ChainStatus.signature_verification_unavailable,
+                    .candidates = candidates, .constraints_ok = true,
+                    .signatures_ok = false, .authenticated = false };
+            }
+        }
+        i = i + 1;
+    }
+    let status: X509ChainStatus = X509ChainStatus.no_issuer;
+    if (saw_critical) { status = X509ChainStatus.unsupported_critical_extension; }
+    else if (saw_time) { status = X509ChainStatus.issuer_time_invalid; }
+    else if (saw_ca) { status = X509ChainStatus.issuer_not_ca; }
+    else if (saw_usage) { status = X509ChainStatus.issuer_key_usage_invalid; }
+    return X509ChainCheck{ .status = status, .candidates = candidates,
+        .constraints_ok = false, .signatures_ok = false, .authenticated = false };
+}

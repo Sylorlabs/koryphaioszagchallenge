@@ -1,0 +1,74 @@
+@import("atspi.zag")
+
+fn check(name_: []u8, ok: bool, count: *i32, failed: *i32) void {
+    count.* = count.* + 1;
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failed.* = failed.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let count: i32 = 0; let failed: i32 = 0;
+    let tree: AccessibilityTree = a11y_shell_tree();
+    check("shell has one application root", tree.root_id == 1 && tree.nodes.len == 10, &count, &failed);
+    check("shell exposes named session, feed, composer and status semantics",
+        a11y_exists(&tree, 3) && a11y_exists(&tree, 7) &&
+        a11y_exists(&tree, 8) && a11y_exists(&tree, 10), &count, &failed);
+    if (a11y_find(&tree, 8)) |composer| {
+        check("composer has an accessible name", str_eq(composer.*.name_, "Message"), &count, &failed);
+        check("composer is editable and multiline",
+            a11y_has_state(composer, A11Y_STATE_EDITABLE) && a11y_has_state(composer, A11Y_STATE_MULTILINE),
+            &count, &failed);
+        check("composer exposes set-text", a11y_has_action(composer, A11Y_ACTION_SET_TEXT), &count, &failed);
+    } else { check("composer exists", false, &count, &failed); }
+    check("Tab starts at New session", a11y_focus_step(&tree, false) && tree.focused_id == 4, &count, &failed);
+    check("Tab follows deterministic shell order", a11y_focus_step(&tree, false) && tree.focused_id == 6 &&
+        a11y_focus_step(&tree, false) && tree.focused_id == 8 &&
+        a11y_focus_step(&tree, false) && tree.focused_id == 9, &count, &failed);
+    check("Tab wraps to first target", a11y_focus_step(&tree, false) && tree.focused_id == 4, &count, &failed);
+    check("Shift-Tab wraps to last target", a11y_focus_step(&tree, true) && tree.focused_id == 9, &count, &failed);
+    check("button activation is exposed through semantic action",
+        a11y_activate(&tree) && a11y_find(&tree, 9).?.*.activation_count == 1, &count, &failed);
+    check("composer text updates only while composer is focused",
+        a11y_focus(&tree, 8) && a11y_set_text(&tree, "Hello") && str_eq(a11y_find(&tree, 8).?.*.value, "Hello"),
+        &count, &failed);
+    check("text action fails closed on a button", a11y_focus(&tree, 9) && !a11y_set_text(&tree, "unsafe") &&
+        str_eq(tree.error_code, "E_A11Y_TEXT_UNAVAILABLE"), &count, &failed);
+    check("non-focusable feed rejects direct focus", !a11y_focus(&tree, 7) &&
+        str_eq(tree.error_code, "E_A11Y_NOT_FOCUSABLE"), &count, &failed);
+    let invalid: AccessibilityTree = a11y_tree();
+    check("orphan nodes are rejected with stable diagnostic",
+        !a11y_add(&invalid, 2, 99, AccessibleRole.panel, "Panel", "", "", A11Y_STATE_VISIBLE, 0, 0 - 1) &&
+        str_eq(invalid.error_code, "E_A11Y_PARENT_MISSING"), &count, &failed);
+    let unnamed: AccessibilityTree = a11y_tree();
+    check("unnamed focus targets are rejected",
+        !a11y_add(&unnamed, 1, 0, AccessibleRole.push_button, "", "", "",
+            A11Y_STATE_VISIBLE | A11Y_STATE_ENABLED | A11Y_STATE_FOCUSABLE, A11Y_ACTION_ACTIVATE, 0) &&
+        str_eq(unnamed.error_code, "E_A11Y_NAME_REQUIRED"), &count, &failed);
+
+    let endpoint: AtspiEndpoint = atspi_endpoint();
+    check("AT-SPI endpoint begins unregistered", !atspi_is_registered(&endpoint), &count, &failed);
+    check("transport state cannot skip discovery and object serving",
+        !atspi_transition(&endpoint, AtspiBusState.registered) && endpoint.state == AtspiBusState.protocol_error &&
+        str_eq(endpoint.error_code, "E_ATSPI_STATE"), &count, &failed);
+    let healthy: AtspiEndpoint = atspi_endpoint();
+    check("registration requires every validated transport transition",
+        atspi_transition(&healthy, AtspiBusState.session_authenticated) &&
+        atspi_transition(&healthy, AtspiBusState.address_requested) &&
+        atspi_transition(&healthy, AtspiBusState.accessibility_bus_connected) &&
+        atspi_transition(&healthy, AtspiBusState.object_server_ready) &&
+        !atspi_is_registered(&healthy) && atspi_transition(&healthy, AtspiBusState.registered) &&
+        atspi_is_registered(&healthy), &count, &failed);
+    let request: []u8 = atspi_encode_get_address(19);
+    check("GetAddress frame is a little-endian D-Bus method call with serial",
+        request.len > 96 && request[0] == ('l' as u8) && request[1] == 1 as u8 && request[8] == 19 as u8,
+        &count, &failed);
+    check("GetAddress frame identifies only the standard accessibility bus endpoint",
+        str_index_of(request, "/org/a11y/bus") >= 0 && str_index_of(request, "org.a11y.Bus") >= 0 &&
+        str_index_of(request, "GetAddress") >= 0, &count, &failed);
+    let encoded_only: AtspiEndpoint = atspi_endpoint();
+    check("encoding discovery traffic never implies registration", !atspi_is_registered(&encoded_only), &count, &failed);
+
+    _zag_print("NATIVE ACCESSIBILITY: "); _zag_print(_zag_i64_to_str(count as i64));
+    _zag_print(" checks, "); _zag_print(_zag_i64_to_str(failed as i64)); _zag_println(" failed");
+    if (failed == 0) { return 0; } return 1;
+}

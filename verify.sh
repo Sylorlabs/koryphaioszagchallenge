@@ -60,13 +60,23 @@ if "$znc" src/native/core_test.zag -o build/core_test --analyze-strict >/tmp/kor
    printf '%s\n' "$core_output" | rg -q 'Cline NDJSON snapshots stream once and persist assistant output' &&
    printf '%s\n' "$core_output" | rg -q 'Cline cancellation sends SIGTERM' &&
    printf '%s\n' "$core_output" | rg -q 'Cline timeout kills and reaps' &&
+   printf '%s\n' "$core_output" | rg -q 'Codex selection executes JSONL' &&
    printf '%s\n' "$core_output" | rg -q 'memory and rules write through to authoritative Markdown' &&
    printf '%s\n' "$core_output" | rg -q 'test simulator persists user and assistant without estimated usage' &&
    printf '%s\n' "$core_output" | rg -q 'NATIVE CORE: ALL PASS'; then
-  record native-core pass persistence-recovery-cline-exec-auth-stream-cancel-timeout-provider-fail-closed-test-stream-session-lifecycle-settings-errors
+  record native-core pass persistence-recovery-cline-and-codex-direct-exec-auth-stream-cancel-timeout-exact-usage-provider-fail-closed-session-settings-errors
 else
   record native-core fail failed
   sed -n '1,80p' /tmp/koryphaios-zag-core-build.log >&2
+fi
+
+if "$znc" src/native/provider_codex_test.zag -o build/provider_codex_test --analyze-strict >/tmp/koryphaios-codex-build.log 2>&1 &&
+   codex_output="$(build/provider_codex_test)" &&
+   printf '%s\n' "$codex_output" | rg -q 'codex-provider: 10/10 passed'; then
+  record codex-provider pass direct-exec-jsonl-auth-stderr-exit-cancel-exact-usage
+else
+  record codex-provider fail failed
+  sed -n '1,80p' /tmp/koryphaios-codex-build.log >&2
 fi
 
 if "$znc" probe/x509test.zag -o build/x509test --analyze-strict >/tmp/koryphaios-x509-build.log 2>&1 &&
@@ -76,6 +86,24 @@ if "$znc" probe/x509test.zag -o build/x509test --analyze-strict >/tmp/koryphaios
 else
   record tls-x509-foundation fail failed
   sed -n '1,80p' /tmp/koryphaios-x509-build.log >&2
+fi
+
+if "$znc" probe/x509chaintest.zag -o build/x509chaintest --analyze-strict >/tmp/koryphaios-x509-chain-build.log 2>&1 &&
+   chain_output="$(build/x509chaintest)" &&
+   printf '%s\n' "$chain_output" | rg -q 'X509 CHAIN TESTS: 16 checks, 0 failed'; then
+  record tls-trust-store-foundation pass bounded-system-ca-constraints-direct-anchor-fail-closed
+else
+  record tls-trust-store-foundation fail failed
+  sed -n '1,80p' /tmp/koryphaios-x509-chain-build.log >&2
+fi
+
+if "$znc" src/native/atspi_test.zag -o build/atspi_test --analyze-strict >/tmp/koryphaios-atspi-build.log 2>&1 &&
+   atspi_output="$(build/atspi_test)" &&
+   printf '%s\n' "$atspi_output" | rg -q 'NATIVE ACCESSIBILITY: 21 checks, 0 failed'; then
+  record accessibility-foundation pass semantic-tree-focus-actions-dbus-discovery-fail-closed
+else
+  record accessibility-foundation fail failed
+  sed -n '1,80p' /tmp/koryphaios-atspi-build.log >&2
 fi
 
 if "$znc" src/native/secret_storage_test.zag -o build/secret_storage_test --analyze-strict >/tmp/koryphaios-secret-build.log 2>&1 &&
@@ -117,6 +145,14 @@ if rg -n -i 'coming soon|placeholder|fake provider|estimated tokens' src/native 
   sed -n '1,40p' /tmp/koryphaios-placeholder-audit.log >&2
 else
   record placeholder-audit pass no-forbidden-markers
+fi
+
+if rg -n -- '--yolo|--act|workspace-write|danger-full-access|auto-approve[^\n]*true' src/native src/backend \
+   >/tmp/koryphaios-security-preset-audit.log; then
+  record security-preset-audit fail unconfirmed-dangerous-provider-policy
+  sed -n '1,40p' /tmp/koryphaios-security-preset-audit.log >&2
+else
+  record security-preset-audit pass cline-plan-only-codex-read-only
 fi
 
 if rg -n 'http_server_make|frontend/public|/api/|WebSocket UI' src/native |
@@ -163,7 +199,7 @@ case "$profile" in
     record tls-pki fail x509-chain-validation-not-implemented
     record secret-service fail encrypted-live-item-operations-not-implemented
     record migration-completeness fail sqlite-and-remaining-domains-not-implemented
-    record accessibility fail atspi-not-implemented
+    record accessibility fail atspi-object-server-events-and-live-client-proof-not-implemented
     record performance-live fail x11-idle-cpu-and-p95-input-latency-not-proven
     record packaging fail signed-update-manifest-not-provisioned
     ;;

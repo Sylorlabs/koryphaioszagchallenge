@@ -1,0 +1,300 @@
+// Native Codex CLI adapter. This module owns the provider-specific argv and
+// JSONL protocol. It never invokes a shell and keeps stdout/stderr separate so
+// callers can surface provider diagnostics without corrupting the event stream.
+
+@import("../backend/util.zag")
+
+enum CodexEventKind {
+    thread_started,
+    turn_started,
+    assistant_message,
+    usage,
+    provider_error,
+    provider_activity,
+    stderr_text,
+    process_exit,
+}
+
+struct CodexEvent {
+    kind: CodexEventKind,
+    text: []u8,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    usage_known: bool,
+    exit_code: i32,
+}
+
+struct CodexRun {
+    pid: i64,
+    stdout_path: []u8,
+    stderr_path: []u8,
+    stdout_seen: i32,
+    stderr_seen: i32,
+    pending_line: []u8,
+    events: ArrayList[*CodexEvent],
+    finished: bool,
+    cancelled: bool,
+    exit_code: i32,
+}
+
+struct CodexExactInt {
+    known: bool,
+    value: i64,
+}
+
+fn codex_exact_nonnegative_int(node: ?*JNode) CodexExactInt {
+    if (node) |value| {
+        switch (value.*) {
+            .num => |number| {
+                if (number.is_int && number.i >= 0) {
+                    return CodexExactInt{ .known = true, .value = number.i };
+                }
+            }
+            else => { }
+        }
+    }
+    return CodexExactInt{ .known = false, .value = 0 };
+}
+
+fn codex_event(run: *CodexRun, kind: CodexEventKind, text_: []u8) *CodexEvent {
+    let event: *CodexEvent = new(CodexEvent{
+        .kind = kind, .text = _zag_strdup(text_),
+        .input_tokens = 0, .cached_input_tokens = 0, .output_tokens = 0,
+        .usage_known = false, .exit_code = 0,
+    });
+    push[*CodexEvent](&run.*.events, event);
+    return event;
+}
+
+fn codex_error_text(root: *JNode) []u8 {
+    let direct: []u8 = json_str(json_get(root, "message"));
+    if (direct.len > 0) { return direct; }
+    let error_node: ?*JNode = json_get(root, "error");
+    let nested: []u8 = json_str(json_get(error_node, "message"));
+    if (nested.len > 0) { return nested; }
+    return "Codex reported an unspecified error.";
+}
+
+// Parse the stable `codex exec --json` event envelope. Assistant text is
+// accepted only from a completed agent_message item. Token usage is accepted
+// only when the provider reports exact, non-negative integer input and output
+// counts; absent or malformed usage remains unknown.
+fn codex_parse_line(run: *CodexRun, raw_line: []u8) void {
+    let line: []u8 = str_trim(raw_line);
+    if (line.len == 0) { return; }
+    let parsed: ?*JNode = json_parse(line);
+    if (parsed) |root| {
+        let kind: []u8 = json_str(json_get(root, "type"));
+        if (str_eq(kind, "thread.started")) {
+            codex_event(run, CodexEventKind.thread_started, json_str(json_get(root, "thread_id")));
+        } else if (str_eq(kind, "turn.started")) {
+            codex_event(run, CodexEventKind.turn_started, "");
+        } else if (str_eq(kind, "item.completed")) {
+            let item: ?*JNode = json_get(root, "item");
+            if (str_eq(json_str(json_get(item, "type")), "agent_message")) {
+                let text_: []u8 = json_str(json_get(item, "text"));
+                if (text_.len > 0) { codex_event(run, CodexEventKind.assistant_message, text_); }
+            } else { codex_event(run, CodexEventKind.provider_activity, line); }
+        } else if (str_eq(kind, "item.started") || str_eq(kind, "item.updated")) {
+            codex_event(run, CodexEventKind.provider_activity, line);
+        } else if (str_eq(kind, "turn.completed")) {
+            let usage: ?*JNode = json_get(root, "usage");
+            let input: CodexExactInt = codex_exact_nonnegative_int(json_get(usage, "input_tokens"));
+            let cached: CodexExactInt = codex_exact_nonnegative_int(json_get(usage, "cached_input_tokens"));
+            let output: CodexExactInt = codex_exact_nonnegative_int(json_get(usage, "output_tokens"));
+            if (input.known && output.known) {
+                let event: *CodexEvent = codex_event(run, CodexEventKind.usage, "");
+                event.*.input_tokens = input.value;
+                if (cached.known) { event.*.cached_input_tokens = cached.value; }
+                event.*.output_tokens = output.value;
+                event.*.usage_known = true;
+            }
+        } else if (str_eq(kind, "turn.failed") || str_eq(kind, "error")) {
+            codex_event(run, CodexEventKind.provider_error, codex_error_text(root));
+        }
+    } else {
+        codex_event(run, CodexEventKind.provider_error, "Codex emitted malformed JSONL.");
+    }
+}
+
+fn codex_env_add(arr: *i64, index: i32, name_: []u8) i32 {
+    let value: []u8 = _zag_getenv(name_);
+    if (value.len == 0) { return index; }
+    arr[index] = util_cpath(_zag_str_concat(name_, _zag_str_concat("=", value))) as i64;
+    return index + 1;
+}
+
+fn codex_envp() *i64 {
+    let env: *i64 = _zag_malloc(16 * 8) as *i64;
+    let n: i32 = 0;
+    n = codex_env_add(env, n, "PATH");
+    n = codex_env_add(env, n, "HOME");
+    n = codex_env_add(env, n, "USER");
+    n = codex_env_add(env, n, "LANG");
+    n = codex_env_add(env, n, "TERM");
+    n = codex_env_add(env, n, "CODEX_HOME");
+    n = codex_env_add(env, n, "OPENAI_API_KEY");
+    n = codex_env_add(env, n, "CODEX_ACCESS_TOKEN");
+    env[n] = 0;
+    return env;
+}
+
+// Direct execve argv, verified against codex-cli 0.144.4 help:
+// codex --ask-for-approval never exec --json --color never --ephemeral
+//       --skip-git-repo-check --sandbox read-only -C <cwd>
+//       [-m <model>] <prompt>
+fn codex_spawn(executable: []u8, prompt: []u8, cwd: []u8, model: []u8,
+               stdout_path: []u8, stderr_path: []u8) *CodexRun {
+    let run: *CodexRun = new(CodexRun{
+        .pid = 0 - 1, .stdout_path = _zag_strdup(stdout_path), .stderr_path = _zag_strdup(stderr_path),
+        .stdout_seen = 0, .stderr_seen = 0, .pending_line = "",
+        .events = make[*CodexEvent](8), .finished = false, .cancelled = false, .exit_code = 0 - 1,
+    });
+    let exe_c: *i8 = util_cpath(executable);
+    let cwd_c: *i8 = util_cpath(cwd);
+    let out_c: *i8 = util_cpath(stdout_path);
+    let err_c: *i8 = util_cpath(stderr_path);
+    let devnull: *i8 = util_cpath("/dev/null");
+    let argv: *i64 = _zag_malloc(20 * 8) as *i64;
+    let n: i32 = 0;
+    argv[n] = exe_c as i64; n = n + 1;
+    argv[n] = util_cpath("--ask-for-approval") as i64; n = n + 1;
+    argv[n] = util_cpath("never") as i64; n = n + 1;
+    argv[n] = util_cpath("exec") as i64; n = n + 1;
+    argv[n] = util_cpath("--json") as i64; n = n + 1;
+    argv[n] = util_cpath("--color") as i64; n = n + 1;
+    argv[n] = util_cpath("never") as i64; n = n + 1;
+    argv[n] = util_cpath("--ephemeral") as i64; n = n + 1;
+    argv[n] = util_cpath("--skip-git-repo-check") as i64; n = n + 1;
+    argv[n] = util_cpath("--sandbox") as i64; n = n + 1;
+    argv[n] = util_cpath("read-only") as i64; n = n + 1;
+    argv[n] = util_cpath("-C") as i64; n = n + 1;
+    argv[n] = cwd_c as i64; n = n + 1;
+    if (model.len > 0) {
+        argv[n] = util_cpath("-m") as i64; n = n + 1;
+        argv[n] = util_cpath(model) as i64; n = n + 1;
+    }
+    argv[n] = util_cpath(prompt) as i64; n = n + 1;
+    argv[n] = 0;
+    let envp: *i64 = codex_envp();
+
+    let pid: i64 = _zag_raw_syscall(57, 0, 0, 0, 0, 0, 0);
+    if (pid < 0) { return run; }
+    if (pid == 0) {
+        _zag_raw_syscall(112, 0, 0, 0, 0, 0, 0);
+        if (cwd.len > 0) { _zag_raw_syscall(80, cwd_c as i64, 0, 0, 0, 0, 0); }
+        let out_fd: i64 = _zag_raw_syscall(2, out_c as i64, 577, 384, 0, 0, 0);
+        let err_fd: i64 = _zag_raw_syscall(2, err_c as i64, 577, 384, 0, 0, 0);
+        let null_fd: i64 = _zag_raw_syscall(2, devnull as i64, 0, 0, 0, 0, 0);
+        _zag_raw_syscall(33, out_fd, 1, 0, 0, 0, 0);
+        _zag_raw_syscall(33, err_fd, 2, 0, 0, 0, 0);
+        _zag_raw_syscall(33, null_fd, 0, 0, 0, 0, 0);
+        _zag_raw_syscall(59, exe_c as i64, argv as i64, envp as i64, 0, 0, 0);
+        _zag_raw_syscall(60, 127, 0, 0, 0, 0, 0);
+    }
+    run.*.pid = pid;
+    return run;
+}
+
+fn codex_tick(run: *CodexRun) void {
+    if (run.*.finished || run.*.pid <= 0) { return; }
+    let stdout: []u8 = util_read_or_empty(run.*.stdout_path);
+    if (stdout.len > run.*.stdout_seen) {
+        let chunk: []u8 = _zag_str_concat(run.*.pending_line, stdout[run.*.stdout_seen..]);
+        run.*.stdout_seen = stdout.len;
+        let rest: []u8 = chunk;
+        let parsing: bool = true;
+        while (parsing) {
+            let part: SplitResult = str_split_first(rest, '\n' as u8);
+            if (!part.found) { run.*.pending_line = _zag_strdup(rest); parsing = false; }
+            else { codex_parse_line(run, part.head); rest = part.tail; }
+        }
+    }
+    let stderr: []u8 = util_read_or_empty(run.*.stderr_path);
+    if (stderr.len > run.*.stderr_seen) {
+        codex_event(run, CodexEventKind.stderr_text, stderr[run.*.stderr_seen..]);
+        run.*.stderr_seen = stderr.len;
+    }
+    let exit_code: i32 = util_poll_child(run.*.pid);
+    if (exit_code >= 0) {
+        if (run.*.pending_line.len > 0) {
+            codex_parse_line(run, run.*.pending_line);
+            run.*.pending_line = "";
+        }
+        run.*.finished = true;
+        run.*.exit_code = exit_code;
+        let event: *CodexEvent = codex_event(run, CodexEventKind.process_exit, "");
+        event.*.exit_code = exit_code;
+    }
+}
+
+fn codex_cancel(run: *CodexRun) bool {
+    if (run.*.finished || run.*.pid <= 0) { return false; }
+    run.*.cancelled = true;
+    // setsid made the child its own process-group leader. Signal that group so
+    // CLI-owned tool subprocesses do not survive cancellation. Also signal the
+    // child directly to close the small fork-to-setsid race.
+    _zag_raw_syscall(62, 0 - run.*.pid, 15, 0, 0, 0, 0);
+    _zag_raw_syscall(62, run.*.pid, 15, 0, 0, 0, 0);
+    return true;
+}
+
+fn codex_auth_status(exit_code: i32, stdout: []u8, stderr: []u8) bool {
+    if (exit_code != 0) { return false; }
+    let combined: []u8 = _zag_str_concat(stdout, stderr);
+    return str_index_of(combined, "Logged in") >= 0;
+}
+
+struct CodexAuthRun {
+    pid: i64,
+    stdout_path: []u8,
+    stderr_path: []u8,
+    finished: bool,
+    exit_code: i32,
+    authenticated: bool,
+}
+
+// Authentication is queried from the CLI that owns the credential. Presence
+// of the executable or of a config file is never treated as login truth.
+fn codex_spawn_auth_status(executable: []u8, stdout_path: []u8, stderr_path: []u8) *CodexAuthRun {
+    let auth: *CodexAuthRun = new(CodexAuthRun{ .pid = 0 - 1,
+        .stdout_path = _zag_strdup(stdout_path), .stderr_path = _zag_strdup(stderr_path),
+        .finished = false, .exit_code = 0 - 1, .authenticated = false });
+    let exe_c: *i8 = util_cpath(executable);
+    let out_c: *i8 = util_cpath(stdout_path);
+    let err_c: *i8 = util_cpath(stderr_path);
+    let devnull: *i8 = util_cpath("/dev/null");
+    let argv: *i64 = _zag_malloc(4 * 8) as *i64;
+    argv[0] = exe_c as i64;
+    argv[1] = util_cpath("login") as i64;
+    argv[2] = util_cpath("status") as i64;
+    argv[3] = 0;
+    let envp: *i64 = codex_envp();
+    let pid: i64 = _zag_raw_syscall(57, 0, 0, 0, 0, 0, 0);
+    if (pid < 0) { return auth; }
+    if (pid == 0) {
+        _zag_raw_syscall(112, 0, 0, 0, 0, 0, 0);
+        let out_fd: i64 = _zag_raw_syscall(2, out_c as i64, 577, 384, 0, 0, 0);
+        let err_fd: i64 = _zag_raw_syscall(2, err_c as i64, 577, 384, 0, 0, 0);
+        let null_fd: i64 = _zag_raw_syscall(2, devnull as i64, 0, 0, 0, 0, 0);
+        _zag_raw_syscall(33, out_fd, 1, 0, 0, 0, 0);
+        _zag_raw_syscall(33, err_fd, 2, 0, 0, 0, 0);
+        _zag_raw_syscall(33, null_fd, 0, 0, 0, 0, 0);
+        _zag_raw_syscall(59, exe_c as i64, argv as i64, envp as i64, 0, 0, 0);
+        _zag_raw_syscall(60, 127, 0, 0, 0, 0, 0);
+    }
+    auth.*.pid = pid;
+    return auth;
+}
+
+fn codex_auth_tick(auth: *CodexAuthRun) void {
+    if (auth.*.finished || auth.*.pid <= 0) { return; }
+    let exit_code: i32 = util_poll_child(auth.*.pid);
+    if (exit_code >= 0) {
+        auth.*.finished = true;
+        auth.*.exit_code = exit_code;
+        auth.*.authenticated = codex_auth_status(exit_code,
+            util_read_or_empty(auth.*.stdout_path), util_read_or_empty(auth.*.stderr_path));
+    }
+}

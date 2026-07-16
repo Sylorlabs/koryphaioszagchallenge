@@ -171,23 +171,26 @@ fn native_spawn(cmd: []u8, out_file: []u8) i64 {
     return pid;
 }
 
-// Spawn the official Cline harness without a shell. Prompt text is an argv
-// value, never command text, so quotes/substitutions cannot escape into a shell.
-// stdout and stderr share an append-only file consumed by the native event loop.
+// Spawn the official Cline harness without a shell. The Basic policy is
+// deliberately plan-only with tool auto-approval disabled; action presets need
+// an explicit native security control and confirmation before they may exist.
+// Prompt text is an argv value, never command text.
 fn native_spawn_cline(executable: []u8, prompt: []u8, cwd: []u8, out_file: []u8) i64 {
     let exe_c: *i8 = util_cpath(executable);
     let prompt_c: *i8 = util_cpath(prompt);
     let cwd_c: *i8 = util_cpath(cwd);
     let out_c: *i8 = util_cpath(out_file);
     let devnull: *i8 = util_cpath("/dev/null");
-    let argv: *i64 = _zag_malloc(8 * 8) as *i64;
+    let argv: *i64 = _zag_malloc(10 * 8) as *i64;
     argv[0] = exe_c as i64;
-    argv[1] = util_cpath("-p") as i64;
-    argv[2] = prompt_c as i64;
-    argv[3] = util_cpath("--act") as i64;
-    argv[4] = util_cpath("--yolo") as i64;
-    argv[5] = util_cpath("--json") as i64;
-    argv[6] = 0;
+    argv[1] = util_cpath("--plan") as i64;
+    argv[2] = util_cpath("--json") as i64;
+    argv[3] = util_cpath("--auto-approve") as i64;
+    argv[4] = util_cpath("false") as i64;
+    argv[5] = util_cpath("--cwd") as i64;
+    argv[6] = cwd_c as i64;
+    argv[7] = prompt_c as i64;
+    argv[8] = 0;
     let envp: *i64 = spawn_build_envp();
 
     let pid: i64 = _zag_raw_syscall(57, 0, 0, 0, 0, 0, 0);
