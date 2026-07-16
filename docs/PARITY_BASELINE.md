@@ -17,7 +17,7 @@ digests.
 | Desktop shell, sessions, messages | Tauri + Svelte | Native X11 shell with keyboard/pointer creation, untouched-session reuse, explicit force-new, rename, confirmed delete, selection, composer, persistent user messages/settings, and restart recovery; regeneration and provider replies remain pending |
 | Providers and exact usage | API and CLI providers | Twelve distinct native identities inventoried; six CLI harnesses use provider-specific, executable-only PATH detection; Cline has a direct-exec, nonblocking NDJSON adapter with owned-auth detection, persisted selection, cancellation, timeout, stderr/exit truth, and unknown usage omitted; a test-only simulator verifies deterministic event ordering; other API/CLI executors pending |
 | TLS PKI | Backend transport | Blocked: X.509 validation required |
-| Notes, memory, project docs | Markdown plus APIs | Migration design pending |
+| Notes, memory, project docs | Markdown plus APIs | Authoritative `.koryphaios/memory/PROJECT.md` and `.koryphaios/rules/PROJECT.md` load, atomically save, persist across restart, and have keyboard-native editors; notes graph, search, rich preview, and broader project documents pending |
 | Git, files, processes, tools | Backend routes and tool loop | Existing legacy Zag core; in-process migration pending |
 | Worker/critic and ask-user | WebSocket events | Existing legacy state machine; native event binding pending |
 | Teams and relay | Collaboration transport | Compatibility inventory pending |

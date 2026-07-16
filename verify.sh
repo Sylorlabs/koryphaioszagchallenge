@@ -46,8 +46,10 @@ else
   sed -n '1,80p' /tmp/koryphaios-zag-build.log >&2
 fi
 
-if [[ -x build/koryphaios ]] && build/koryphaios --headless-test | rg -q 'session=create-reuse-force-rename-confirm-delete'; then
-  record native-headless pass contract-keyboard-pointer-session-lifecycle-renderer
+if [[ -x build/koryphaios ]] && headless_output="$(build/koryphaios --headless-test)" &&
+   printf '%s\n' "$headless_output" | rg -q 'session=create-reuse-force-rename-confirm-delete' &&
+   printf '%s\n' "$headless_output" | rg -q 'knowledge=markdown-memory-rules'; then
+  record native-headless pass contract-keyboard-pointer-session-lifecycle-knowledge-renderer
 else
   record native-headless fail failed
 fi
@@ -58,6 +60,7 @@ if "$znc" src/native/core_test.zag -o build/core_test --analyze-strict >/tmp/kor
    printf '%s\n' "$core_output" | rg -q 'Cline NDJSON snapshots stream once and persist assistant output' &&
    printf '%s\n' "$core_output" | rg -q 'Cline cancellation sends SIGTERM' &&
    printf '%s\n' "$core_output" | rg -q 'Cline timeout kills and reaps' &&
+   printf '%s\n' "$core_output" | rg -q 'memory and rules write through to authoritative Markdown' &&
    printf '%s\n' "$core_output" | rg -q 'test simulator persists user and assistant without estimated usage' &&
    printf '%s\n' "$core_output" | rg -q 'NATIVE CORE: ALL PASS'; then
   record native-core pass persistence-recovery-cline-exec-auth-stream-cancel-timeout-provider-fail-closed-test-stream-session-lifecycle-settings-errors

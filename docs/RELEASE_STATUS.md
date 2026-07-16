@@ -25,6 +25,11 @@ usage. An explicitly test-only deterministic simulator exercises user
 and assistant persistence plus thinking, delta, assistant, and done events. It
 is absent from the production catalog and emits no invented token or cost data.
 
+Project memory and rules now remain authoritative Markdown under
+`.koryphaios/memory/PROJECT.md` and `.koryphaios/rules/PROJECT.md`. Native
+keyboard editors load them at startup and write atomically with bounded size and
+stable errors; they are not mirrored into an opaque database.
+
 The Zag compiler defect exposed by this application was fixed source-first in
 the sibling Zag checkout: qualified generic function signatures now register
 their substituted generic struct layouts before type normalization. Native

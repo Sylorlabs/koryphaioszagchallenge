@@ -14,6 +14,7 @@ struct NativeUi {
     settings_open: bool,
     rename_mode: bool,
     delete_confirm_sid: []u8,
+    knowledge_mode: i32,
     safe_mode: bool,
     last_btn: i32,
     last_error: []u8,
@@ -60,6 +61,7 @@ fn ui_new(core: *AppCore, safe_mode: bool) *NativeUi {
         .settings_open = false,
         .rename_mode = false,
         .delete_confirm_sid = "",
+        .knowledge_mode = 0,
         .safe_mode = safe_mode,
         .last_btn = 0,
         .last_error = "",
@@ -133,6 +135,22 @@ fn ui_select_provider(ui: *NativeUi, provider: *ProviderIdentity) void {
     let _ok: bool = ui_command(ui, cmd);
 }
 
+fn ui_open_knowledge(ui: *NativeUi, mode: i32) void {
+    ui.*.knowledge_mode = mode;
+    if (mode == 1) { ui.*.composer = _zag_strdup(ui.*.core.*.memory_text); }
+    else { ui.*.composer = _zag_strdup(ui.*.core.*.rules_text); }
+    ui.*.composer_focused = true;
+    ui.*.palette_open = false;
+    ui.*.settings_open = false;
+}
+
+fn ui_save_knowledge(ui: *NativeUi) void {
+    let kind: AppCommandKind = AppCommandKind.memory_save;
+    if (ui.*.knowledge_mode == 2) { kind = AppCommandKind.rules_save; }
+    let cmd: AppCommand = core_command(kind, "", ui.*.composer);
+    let _ok: bool = ui_command(ui, cmd);
+}
+
 fn ui_send(ui: *NativeUi) void {
     let cmd: AppCommand = core_command(AppCommandKind.message_send, "", ui.*.composer);
     if (ui_command(ui, cmd)) { ui.*.composer = ""; }
@@ -151,6 +169,9 @@ fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
         let _cancelled: bool = ui_command(ui, cancel);
         return;
     }
+    if (ctrl && code == 'm') { ui_open_knowledge(ui, 1); return; }
+    if (ctrl && code == 'r') { ui_open_knowledge(ui, 2); return; }
+    if (ctrl && code == 's' && ui.*.knowledge_mode > 0) { ui_save_knowledge(ui); return; }
     if (ui.*.delete_confirm_sid.len > 0) {
         if (code == 27) { ui.*.delete_confirm_sid = ""; }
         else if (code == 13) { ui_delete_session(ui, ui.*.delete_confirm_sid); }
@@ -169,6 +190,7 @@ fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
     }
     if (code == 27) {
         if (ui.*.rename_mode) { ui.*.rename_mode = false; ui.*.composer = ""; }
+        if (ui.*.knowledge_mode > 0) { ui.*.knowledge_mode = 0; ui.*.composer = ""; }
         ui.*.palette_open = false;
         ui.*.settings_open = false;
         return;
@@ -179,9 +201,11 @@ fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
     }
     if (ui.*.settings_open && code == 'a') { ui_toggle_always_create(ui); return; }
     if (code == 9) { ui.*.composer_focused = !ui.*.composer_focused; return; }
-    if (ui.*.palette_open || ui.*.settings_open || !ui.*.composer_focused) { return; }
+    if (((ui.*.palette_open || ui.*.settings_open) && ui.*.knowledge_mode == 0) || !ui.*.composer_focused) { return; }
     if (code == 13) {
-        if (ui.*.rename_mode) { ui_commit_rename(ui); } else { ui_send(ui); }
+        if (ui.*.rename_mode) { ui_commit_rename(ui); }
+        else if (ui.*.knowledge_mode > 0) { ui.*.composer = _zag_str_concat(ui.*.composer, "\n"); }
+        else { ui_send(ui); }
         return;
     }
     if (code == 8) {
@@ -288,6 +312,7 @@ fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
         if (event.*.kind == AppEventKind.session_changed) { prefix = "session"; }
         if (event.*.kind == AppEventKind.session_deleted) { prefix = "deleted"; detail = "session removed"; }
         if (event.*.kind == AppEventKind.setting_changed) { prefix = "setting"; }
+        if (event.*.kind == AppEventKind.knowledge_changed) { prefix = "knowledge"; }
         draw_text(f, 290, y, _zag_str_concat(prefix, _zag_str_concat(": ", detail)), rgb(204, 192, 175));
         y = y + 28;
         i = i + 1;
@@ -357,6 +382,16 @@ fn draw_delete_confirmation(f: *FB, w: i32, h: i32) void {
     draw_button(f, w / 2 + 10, h / 2 + 24, 116, "Delete", true);
 }
 
+fn draw_knowledge_editor(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
+    fill_rect(f, 270, 58, w - 310, h - 190, rgb(28, 25, 23));
+    round_rect_outline(f, 270, 58, w - 310, h - 190, 8, rgb(110, 92, 57));
+    let title: []u8 = "Project memory Markdown";
+    if (ui.*.knowledge_mode == 2) { title = "Project rules Markdown"; }
+    draw_text_scaled(f, 292, 82, title, rgb(239, 230, 215), 2);
+    draw_text(f, 292, 118, "Authoritative file - Ctrl+S saves atomically - Escape closes", rgb(183, 172, 155));
+    draw_text_max(f, 292, 154, ui.*.composer, rgb(204, 192, 175), w - 350);
+}
+
 fn render(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     fill_rect(f, 0, 0, w, h, rgb(13, 11, 10));
     fill_rect(f, 0, 0, w, 40, rgb(28, 25, 23));
@@ -376,6 +411,7 @@ fn render(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     }
     draw_feed(f, ui, w, h);
     if (ui.*.settings_open) { draw_settings(f, ui, w, h); }
+    if (ui.*.knowledge_mode > 0) { draw_knowledge_editor(f, ui, w, h); }
     if (ui.*.palette_open) { draw_palette(f, w); }
     if (ui.*.delete_confirm_sid.len > 0) { draw_delete_confirmation(f, w, h); }
 }
@@ -432,6 +468,14 @@ fn run_headless() i32 {
         _zag_eprintln("native-headless: FAIL delete-keyboard");
         return 1;
     }
+    ui_key(ui, 'm', 2);
+    ui.*.composer = "# UI memory\n\nSaved through native keyboard workflow.\n";
+    ui_key(ui, 's', 2);
+    if (!str_eq(core.*.memory_text, ui.*.composer)) {
+        _zag_eprintln("native-headless: FAIL memory-editor");
+        return 1;
+    }
+    ui_key(ui, 27, 0);
     let width: i32 = arg_i_after("--width", 1024);
     let height: i32 = arg_i_after("--height", 640);
     let scale: i32 = arg_i_after("--scale", 1);
@@ -455,7 +499,7 @@ fn run_headless() i32 {
             fb_write_bmp(&physical, path);
         }
     }
-    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=user-assistant-persist simulator=test-only usage=unknown-omitted settings=persist renderer=framebuffer");
+    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=user-assistant-persist simulator=test-only usage=unknown-omitted settings=persist knowledge=markdown-memory-rules renderer=framebuffer");
     return 0;
 }
 

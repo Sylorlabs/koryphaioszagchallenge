@@ -38,6 +38,8 @@ struct AppCore {
     test_provider_enabled: bool,
     selected_provider_id: []u8,
     cli_run: ?*CliRun,
+    memory_text: []u8,
+    rules_text: []u8,
     ready: bool,
     error_code: []u8,
 }
@@ -162,6 +164,21 @@ fn core_settings_backup_path(core: *AppCore) []u8 {
     return _zag_str_concat(core.*.data_dir, "/native-settings.corrupt.backup");
 }
 
+fn core_memory_path(core: *AppCore) []u8 {
+    return _zag_str_concat(core.*.data_dir, "/memory/PROJECT.md");
+}
+
+fn core_rules_path(core: *AppCore) []u8 {
+    return _zag_str_concat(core.*.data_dir, "/rules/PROJECT.md");
+}
+
+fn core_load_knowledge(core: *AppCore) void {
+    util_mkdir(_zag_str_concat(core.*.data_dir, "/memory"));
+    util_mkdir(_zag_str_concat(core.*.data_dir, "/rules"));
+    core.*.memory_text = util_read_or_empty(core_memory_path(core));
+    core.*.rules_text = util_read_or_empty(core_rules_path(core));
+}
+
 fn core_save_settings(core: *AppCore) bool {
     let value: []u8 = "false";
     if (core.*.always_create_session) { value = "true"; }
@@ -219,6 +236,8 @@ fn core_open_mode(data_dir: []u8, test_provider_enabled: bool) *AppCore {
         .test_provider_enabled = test_provider_enabled,
         .selected_provider_id = "",
         .cli_run = null,
+        .memory_text = "",
+        .rules_text = "",
         .ready = false,
         .error_code = "",
     });
@@ -233,6 +252,7 @@ fn core_open_mode(data_dir: []u8, test_provider_enabled: bool) *AppCore {
         core_event(core, AppEventKind.recovery_required, "", "Native settings are invalid; the original was backed up.", core.*.error_code);
         return core;
     }
+    core_load_knowledge(core);
     if (core.*.store.*.sessions.len > 0) {
         core.*.active_session_id = get[*Session](core.*.store.*.sessions, 0).*.id;
     }
@@ -508,6 +528,21 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
             return core_reject(core, cmd, "E_SETTINGS_WRITE", "The session preference could not be saved.");
         }
         core_event(core, AppEventKind.setting_changed, "", cmd.*.payload, "");
+        return true;
+    }
+    if (cmd.*.kind == AppCommandKind.memory_save || cmd.*.kind == AppCommandKind.rules_save) {
+        if (cmd.*.payload.len > 1048576) {
+            return core_reject(core, cmd, "E_KNOWLEDGE_TOO_LARGE", "Project knowledge files are limited to 1 MiB each.");
+        }
+        let path: []u8 = core_memory_path(core);
+        let label: []u8 = "memory";
+        if (cmd.*.kind == AppCommandKind.rules_save) { path = core_rules_path(core); label = "rules"; }
+        if (!util_write_atomic(path, cmd.*.payload)) {
+            return core_reject(core, cmd, "E_KNOWLEDGE_WRITE", "The Markdown knowledge file could not be saved.");
+        }
+        if (cmd.*.kind == AppCommandKind.memory_save) { core.*.memory_text = _zag_strdup(cmd.*.payload); }
+        else { core.*.rules_text = _zag_strdup(cmd.*.payload); }
+        core_event(core, AppEventKind.knowledge_changed, "", label, "");
         return true;
     }
     if (cmd.*.kind == AppCommandKind.message_cancel) {

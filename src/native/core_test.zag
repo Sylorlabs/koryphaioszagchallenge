@@ -159,6 +159,12 @@ fn main() i32 {
     let _p2: bool = core_dispatch(core, &preference_second);
     check("always-create preference overrides untouched-session reuse",
         core.*.store.*.sessions.len == 3, &failures);
+    let save_memory: AppCommand = core_command(AppCommandKind.memory_save, "", "# Project memory\n\nKeep exact provider usage only.\n");
+    let save_rules: AppCommand = core_command(AppCommandKind.rules_save, "", "# Project rules\n\nNever estimate token counts.\n");
+    check("memory and rules write through to authoritative Markdown",
+        core_dispatch(core, &save_memory) && core_dispatch(core, &save_rules) &&
+        str_eq(util_read_or_empty(_zag_str_concat(root, "/memory/PROJECT.md")), save_memory.payload) &&
+        str_eq(util_read_or_empty(_zag_str_concat(root, "/rules/PROJECT.md")), save_rules.payload), &failures);
     let remove_p1: AppCommand = core_command(AppCommandKind.session_delete,
         get[*Session](core.*.store.*.sessions, 1).*.id, "");
     let _r1: bool = core_dispatch(core, &remove_p1);
@@ -174,7 +180,9 @@ fn main() i32 {
     check("restart recovers persisted session state", reopened.*.ready &&
         reopened.*.store.*.sessions.len == 1 &&
         get[*Session](reopened.*.store.*.sessions, 0).*.message_count == 2 &&
-        reopened.*.always_create_session, &failures);
+        reopened.*.always_create_session &&
+        str_eq(reopened.*.memory_text, save_memory.payload) &&
+        str_eq(reopened.*.rules_text, save_rules.payload), &failures);
 
     let corrupt_root: []u8 = _zag_str_concat(root, "-corrupt");
     util_mkdir(corrupt_root);

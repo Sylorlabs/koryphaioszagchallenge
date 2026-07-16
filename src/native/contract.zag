@@ -14,6 +14,8 @@ enum AppCommandKind {
     service_tick,
     settings_open,
     setting_always_create_session,
+    memory_save,
+    rules_save,
     recovery_retry,
 }
 
@@ -27,6 +29,7 @@ enum AppEventKind {
     agent_status,
     provider_changed,
     setting_changed,
+    knowledge_changed,
     recovery_required,
     command_rejected,
 }
