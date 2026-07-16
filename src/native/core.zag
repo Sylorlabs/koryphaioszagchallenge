@@ -20,6 +20,7 @@ struct AppCore {
     events: ArrayList[*AppEvent],
     data_dir: []u8,
     always_create_session: bool,
+    test_provider_enabled: bool,
     ready: bool,
     error_code: []u8,
 }
@@ -162,7 +163,7 @@ fn core_check_schema(core: *AppCore) bool {
     return false;
 }
 
-fn core_open(data_dir: []u8) *AppCore {
+fn core_open_mode(data_dir: []u8, test_provider_enabled: bool) *AppCore {
     let core: *AppCore = new(AppCore{
         .store = store_open(data_dir),
         .active_session_id = "",
@@ -170,6 +171,7 @@ fn core_open(data_dir: []u8) *AppCore {
         .events = make[*AppEvent](16),
         .data_dir = _zag_strdup(data_dir),
         .always_create_session = false,
+        .test_provider_enabled = test_provider_enabled,
         .ready = false,
         .error_code = "",
     });
@@ -190,6 +192,14 @@ fn core_open(data_dir: []u8) *AppCore {
     core.*.ready = true;
     core_event(core, AppEventKind.startup_ready, core.*.active_session_id, "storage, catalog, project, and UI resources ready", "");
     return core;
+}
+
+fn core_open(data_dir: []u8) *AppCore {
+    return core_open_mode(data_dir, false);
+}
+
+fn core_open_test(data_dir: []u8) *AppCore {
+    return core_open_mode(data_dir, true);
 }
 
 fn core_find_provider(core: *AppCore, id: []u8) ?*ProviderIdentity {
@@ -268,6 +278,9 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
         if (core.*.active_session_id.len == 0) {
             return core_reject(core, cmd, "E_SESSION_REQUIRED", "Create or select a session first.");
         }
+        if (!core.*.test_provider_enabled) {
+            return core_reject(core, cmd, "E_PROVIDER_REQUIRED", "No executable model provider is selected. Open Settings and connect a provider before sending.");
+        }
         if (store_find(core.*.store, core.*.active_session_id)) |session| {
             let now: i64 = util_now_ms();
             let mid: []u8 = util_nanoid(12);
@@ -276,6 +289,17 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
             session.*.message_count = session.*.message_count + 1;
             store_touch(core.*.store, session);
             core_event(core, AppEventKind.message_added, session.*.id, cmd.*.payload, "");
+            core_event(core, AppEventKind.agent_status, session.*.id, "thinking", "");
+            let reply: []u8 = _zag_str_concat("Simulator reply: ", cmd.*.payload);
+            core_event(core, AppEventKind.stream_delta, session.*.id, reply, "");
+            let aid: []u8 = util_nanoid(12);
+            let assistant: []u8 = message_json(aid, session.*.id, "assistant", reply,
+                "deterministic", "test-simulator", 0, 0, 0, util_now_ms());
+            store_append_message(core.*.store, session.*.id, assistant);
+            session.*.message_count = session.*.message_count + 1;
+            store_touch(core.*.store, session);
+            core_event(core, AppEventKind.assistant_added, session.*.id, reply, "");
+            core_event(core, AppEventKind.agent_status, session.*.id, "done", "");
             return true;
         }
         return core_reject(core, cmd, "E_SESSION_NOT_FOUND", "The active session no longer exists.");

@@ -16,13 +16,19 @@ Provider refresh performs
 pure-Zag executable PATH checks for Jules, Gemini CLI, Codex, Claude Code,
 Cursor Agent, and Cline without invoking project-local impostors.
 
+Production chat now fails closed before persistence when no real provider
+executor is selected, so it cannot leave a misleading user-only turn or partial
+loading state. An explicitly test-only deterministic simulator exercises user
+and assistant persistence plus thinking, delta, assistant, and done events. It
+is absent from the production catalog and emits no invented token or cost data.
+
 The Zag compiler defect exposed by this application was fixed source-first in
 the sibling Zag checkout: qualified generic function signatures now register
 their substituted generic struct layouts before type normalization. Native
 container access uses the normal list.get API again; the local compiler digest
 and relevant source digest are pinned in TOOLCHAIN.lock.
 
-The release remains blocked on regeneration and provider replies, complete in-process service migration,
+The release remains blocked on real provider replies, regeneration, complete in-process service migration,
 Secret-Service/vault storage, X.509 chain validation, provider execution, full
 native workflows, AT-SPI, legacy-data migration fixtures, packaging, and
 performance evidence. The release verifier fails closed for those unresolved

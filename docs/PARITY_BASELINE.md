@@ -15,7 +15,7 @@ digests.
 | Area | Reference behavior | Native status |
 | --- | --- | --- |
 | Desktop shell, sessions, messages | Tauri + Svelte | Native X11 shell with keyboard/pointer creation, untouched-session reuse, explicit force-new, rename, confirmed delete, selection, composer, persistent user messages/settings, and restart recovery; regeneration and provider replies remain pending |
-| Providers and exact usage | API and CLI providers | Twelve distinct native identities inventoried; six CLI harnesses use provider-specific, executable-only PATH detection; API auth/model execution pending |
+| Providers and exact usage | API and CLI providers | Twelve distinct native identities inventoried; six CLI harnesses use provider-specific, executable-only PATH detection; production send fails before persistence until a real executor is selected; an explicitly test-only simulator verifies user/assistant persistence and typed stream ordering without estimated usage; API/CLI execution pending |
 | TLS PKI | Backend transport | Blocked: X.509 validation required |
 | Notes, memory, project docs | Markdown plus APIs | Migration design pending |
 | Git, files, processes, tools | Backend routes and tool loop | Existing legacy Zag core; in-process migration pending |

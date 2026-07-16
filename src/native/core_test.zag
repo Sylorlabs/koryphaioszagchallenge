@@ -8,7 +8,18 @@ fn check(name_: []u8, ok: bool, failures: *i32) void {
 fn main() i32 {
     let failures: i32 = 0;
     let root: []u8 = _zag_str_concat("/tmp/koryphaios-core-", _zag_i64_to_str(util_getpid()));
-    let core: *AppCore = core_open(root);
+    let production_root: []u8 = _zag_str_concat(root, "-production");
+    let production: *AppCore = core_open(production_root);
+    let production_session: AppCommand = core_command(AppCommandKind.session_new, "", "Production chat");
+    let _production_created: bool = core_dispatch(production, &production_session);
+    let production_send: AppCommand = core_command(AppCommandKind.message_send, "", "must not persist");
+    check("production chat fails closed before persistence without an executor",
+        !core_dispatch(production, &production_send) &&
+        str_eq(get[*AppEvent](production.*.events, production.*.events.len - 1).*.code, "E_PROVIDER_REQUIRED") &&
+        get[*Session](production.*.store.*.sessions, 0).*.message_count == 0 &&
+        str_eq(store_messages_raw(production.*.store, production.*.active_session_id), "[]"), &failures);
+
+    let core: *AppCore = core_open_test(root);
     check("startup reaches ready only after schema and provider catalog", core.*.ready, &failures);
     check("provider identities remain distinct", core.*.providers.len == 12 &&
         core_find_provider(core, "google-ai-studio") != null &&
@@ -59,8 +70,17 @@ fn main() i32 {
     check("message_send persists user content", core_dispatch(core, &send), &failures);
     let session: *Session = get[*Session](core.*.store.*.sessions, 0);
     let messages: []u8 = store_messages_raw(core.*.store, session.*.id);
-    check("message count is exact and usage is not estimated", session.*.message_count == 1 &&
-        messages.len > 20 && session.*.tokens_in == 0 && session.*.tokens_out == 0, &failures);
+    check("test simulator persists user and assistant without estimated usage", session.*.message_count == 2 &&
+        str_index_of(messages, "hello from native Zag") >= 0 &&
+        str_index_of(messages, "Simulator reply: hello from native Zag") >= 0 &&
+        session.*.tokens_in == 0 && session.*.tokens_out == 0, &failures);
+    check("test simulator emits ordered status, delta, assistant, and done events",
+        core.*.events.len >= 6 &&
+        get[*AppEvent](core.*.events, core.*.events.len - 3).*.kind == AppEventKind.stream_delta &&
+        get[*AppEvent](core.*.events, core.*.events.len - 2).*.kind == AppEventKind.assistant_added &&
+        get[*AppEvent](core.*.events, core.*.events.len - 1).*.kind == AppEventKind.agent_status &&
+        str_eq(get[*AppEvent](core.*.events, core.*.events.len - 1).*.payload, "done"),
+        &failures);
 
     let always: AppCommand = core_command(AppCommandKind.setting_always_create_session, "", "true");
     check("always-create preference persists as a real setting", core_dispatch(core, &always) &&
@@ -86,7 +106,7 @@ fn main() i32 {
     let reopened: *AppCore = core_open(root);
     check("restart recovers persisted session state", reopened.*.ready &&
         reopened.*.store.*.sessions.len == 1 &&
-        get[*Session](reopened.*.store.*.sessions, 0).*.message_count == 1 &&
+        get[*Session](reopened.*.store.*.sessions, 0).*.message_count == 2 &&
         reopened.*.always_create_session, &failures);
 
     let corrupt_root: []u8 = _zag_str_concat(root, "-corrupt");

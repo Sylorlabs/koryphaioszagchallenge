@@ -265,6 +265,9 @@ fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
         let prefix: []u8 = "event";
         let detail: []u8 = event.*.payload;
         if (event.*.kind == AppEventKind.message_added) { prefix = "you"; }
+        if (event.*.kind == AppEventKind.stream_delta) { prefix = "Kory"; }
+        if (event.*.kind == AppEventKind.assistant_added) { prefix = "assistant"; }
+        if (event.*.kind == AppEventKind.agent_status) { prefix = "agent"; }
         if (event.*.kind == AppEventKind.command_rejected) { prefix = "error"; }
         if (event.*.kind == AppEventKind.session_changed) { prefix = "session"; }
         if (event.*.kind == AppEventKind.session_deleted) { prefix = "deleted"; detail = "session removed"; }
@@ -283,6 +286,9 @@ fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
         else { prompt = "Message Koryphaios"; }
     }
     draw_text_max(f, 304, h - 84, prompt, rgb(204, 192, 175), w - 380);
+    if (!ui.*.core.*.test_provider_enabled) {
+        draw_text_max(f, 290, h - 126, "Setup required: connect an executable provider before sending.", rgb(235, 130, 110), w - 330);
+    }
     if (ui.*.last_error.len > 0) {
         draw_text_max(f, 290, h - 44, ui.*.last_error, rgb(235, 130, 110), w - 330);
     } else {
@@ -358,7 +364,7 @@ fn render(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
 
 fn run_headless() i32 {
     let root: []u8 = _zag_str_concat("/tmp/koryphaios-ui-", _zag_i64_to_str(util_getpid()));
-    let core: *AppCore = core_open(root);
+    let core: *AppCore = core_open_test(root);
     let ui: *NativeUi = ui_new(core, true);
     ui_key(ui, 'n', 2);
     ui_key(ui, 'h', 0);
@@ -376,7 +382,7 @@ fn run_headless() i32 {
     ui_key(ui, 'a', 0);
     ui_key(ui, 27, 0);
     if (!core.*.ready || core.*.store.*.sessions.len != 1 ||
-        list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 1 || !palette_works || !settings_works || !setting_works) {
+        list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 2 || !palette_works || !settings_works || !setting_works) {
         _zag_eprintln("native-headless: FAIL workflow");
         return 1;
     }
@@ -431,7 +437,7 @@ fn run_headless() i32 {
             fb_write_bmp(&physical, path);
         }
     }
-    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=persist settings=persist renderer=framebuffer");
+    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=user-assistant-persist simulator=test-only usage=unknown-omitted settings=persist renderer=framebuffer");
     return 0;
 }
 

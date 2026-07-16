@@ -53,8 +53,11 @@ else
 fi
 
 if "$znc" src/native/core_test.zag -o build/core_test --analyze-strict >/tmp/koryphaios-zag-core-build.log 2>&1 &&
-   build/core_test | rg -q 'NATIVE CORE: ALL PASS'; then
-  record native-core pass persistence-recovery-provider-detection-session-lifecycle-settings-errors
+   core_output="$(build/core_test)" &&
+   printf '%s\n' "$core_output" | rg -q 'production chat fails closed before persistence' &&
+   printf '%s\n' "$core_output" | rg -q 'test simulator persists user and assistant without estimated usage' &&
+   printf '%s\n' "$core_output" | rg -q 'NATIVE CORE: ALL PASS'; then
+  record native-core pass persistence-recovery-provider-fail-closed-test-stream-session-lifecycle-settings-errors
 else
   record native-core fail failed
   sed -n '1,80p' /tmp/koryphaios-zag-core-build.log >&2
