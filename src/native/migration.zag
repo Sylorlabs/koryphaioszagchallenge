@@ -1,0 +1,326 @@
+// Backup-first migration from the legacy Koryphaios portable export into the
+// native JSON store. This module is deliberately independent of AppCore so a
+// complete dry validation can run before startup mutates any persisted data.
+
+@import("../backend/store.zag")
+
+enum MigrationStatus {
+    migrated,
+    already_current,
+    invalid_source,
+    unsupported_version,
+    backup_failed,
+    write_failed,
+}
+
+struct MigrationResult {
+    status: MigrationStatus,
+    changed: bool,
+    source_version: i64,
+    sessions: i32,
+    messages: i32,
+    diagnostic: []u8,
+}
+
+struct MigrationOutput {
+    sessions_json: []u8,
+    settings_json: []u8,
+    message_ids: ArrayList[[]u8],
+    message_json: ArrayList[[]u8],
+    session_count: i32,
+    message_count: i32,
+}
+
+fn migration_result(status: MigrationStatus, changed: bool, version: i64,
+                    sessions: i32, messages: i32, diagnostic: []u8) MigrationResult {
+    return MigrationResult{ .status = status, .changed = changed, .source_version = version,
+        .sessions = sessions, .messages = messages, .diagnostic = diagnostic };
+}
+
+fn migration_is_object(node: ?*JNode) bool {
+    if (node) |value| { switch (value.*) { .obj => |_| { return true; } else => { } } }
+    return false;
+}
+
+fn migration_is_array(node: ?*JNode) bool {
+    if (node) |value| { switch (value.*) { .arr => |_| { return true; } else => { } } }
+    return false;
+}
+
+fn migration_is_string(node: ?*JNode) bool {
+    if (node) |value| { switch (value.*) { .str => |_| { return true; } else => { } } }
+    return false;
+}
+
+fn migration_is_bool(node: ?*JNode) bool {
+    if (node) |value| { switch (value.*) { .bool_ => |_| { return true; } else => { } } }
+    return false;
+}
+
+fn migration_is_number(node: ?*JNode) bool {
+    if (node) |value| { switch (value.*) { .num => |_| { return true; } else => { } } }
+    return false;
+}
+
+fn migration_safe_id(id: []u8) bool {
+    if (id.len == 0 || id.len > 128) { return false; }
+    let i: i32 = 0;
+    while (i < id.len) {
+        let c: u8 = id[i];
+        let ok: bool = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_';
+        if (!ok) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn migration_seen_id(ids: ArrayList[[]u8], id: []u8) bool {
+    let i: i32 = 0;
+    while (i < ids.len) { if (str_eq(get[[]u8](ids, i), id)) { return true; } i = i + 1; }
+    return false;
+}
+
+fn migration_required_nonnegative(node: ?*JNode) bool {
+    return migration_is_number(node) && json_int(node) >= 0;
+}
+
+fn migration_content_text(node: ?*JNode) ?[]u8 {
+    if (migration_is_string(node)) { return json_str(node); }
+    if (!migration_is_array(node) || json_arr_len(node) != 1) { return null; }
+    let block: ?*JNode = json_arr_at(node, 0);
+    if (!migration_is_object(block) || !str_eq(json_str(json_get(block, "type")), "text") ||
+        !migration_is_string(json_get(block, "text"))) { return null; }
+    return json_str(json_get(block, "text"));
+}
+
+fn migration_append_session(out: *StrBuf, node: ?*JNode, index: i32) ?[]u8 {
+    if (!migration_is_object(node)) { return _zag_str_concat("E_SESSION_OBJECT index=", _zag_i64_to_str(index)); }
+    let id: []u8 = json_str(json_get(node, "id"));
+    let title: []u8 = json_str(json_get(node, "title"));
+    if (!migration_safe_id(id)) { return _zag_str_concat("E_SESSION_ID index=", _zag_i64_to_str(index)); }
+    if (title.len == 0 || title.len > 120) { return _zag_str_concat("E_SESSION_TITLE id=", id); }
+    if (!migration_required_nonnegative(json_get(node, "messageCount")) ||
+        !migration_required_nonnegative(json_get(node, "totalTokensIn")) ||
+        !migration_required_nonnegative(json_get(node, "totalTokensOut")) ||
+        !migration_required_nonnegative(json_get(node, "totalCost")) ||
+        !migration_required_nonnegative(json_get(node, "createdAt")) ||
+        !migration_required_nonnegative(json_get(node, "updatedAt"))) {
+        return _zag_str_concat("E_SESSION_NUMERIC id=", id);
+    }
+    let parsed: ?*Session = session_from_json(node);
+    if (parsed) |session| { session_json(session, out); return null; }
+    return _zag_str_concat("E_SESSION_PARSE id=", id);
+}
+
+fn migration_append_message(out: *StrBuf, node: ?*JNode, sid: []u8, index: i32) ?[]u8 {
+    if (!migration_is_object(node)) { return _zag_str_concat("E_MESSAGE_OBJECT session=", sid); }
+    let id: []u8 = json_str(json_get(node, "id"));
+    let claimed_sid: []u8 = json_str(json_get(node, "sessionId"));
+    let role: []u8 = json_str(json_get(node, "role"));
+    if (!migration_safe_id(id)) { return _zag_str_concat("E_MESSAGE_ID session=", sid); }
+    if (!str_eq(claimed_sid, sid)) { return _zag_str_concat("E_MESSAGE_SESSION id=", id); }
+    if (!str_eq(role, "user") && !str_eq(role, "assistant") && !str_eq(role, "system")) {
+        return _zag_str_concat("E_MESSAGE_ROLE id=", id);
+    }
+    let maybe_text: ?[]u8 = migration_content_text(json_get(node, "content"));
+    if (!migration_required_nonnegative(json_get(node, "tokensIn")) ||
+        !migration_required_nonnegative(json_get(node, "tokensOut")) ||
+        !migration_required_nonnegative(json_get(node, "cost")) ||
+        !migration_required_nonnegative(json_get(node, "createdAt"))) {
+        return _zag_str_concat("E_MESSAGE_NUMERIC id=", id);
+    }
+    let model: []u8 = json_str(json_get(node, "model"));
+    let provider: []u8 = json_str(json_get(node, "provider"));
+    if (maybe_text) |text| {
+        sb_app(out, message_json(id, sid, role, text, model, provider,
+            json_int(json_get(node, "tokensIn")), json_int(json_get(node, "tokensOut")),
+            (json_float(json_get(node, "cost")) * 1000000.0) as i64,
+            json_int(json_get(node, "createdAt"))));
+        return null;
+    }
+    return _zag_str_concat("E_MESSAGE_CONTENT id=", id);
+}
+
+fn migration_validate(root: ?*JNode) []u8 {
+    if (!migration_is_object(root)) { return "E_EXPORT_OBJECT"; }
+    if (!str_eq(json_str(json_get(root, "format")), "koryphaios-portable-export")) { return "E_EXPORT_FORMAT"; }
+    let sessions_node: ?*JNode = json_get(root, "sessions");
+    let messages_node: ?*JNode = json_get(root, "messages");
+    let settings_node: ?*JNode = json_get(root, "settings");
+    if (!migration_is_array(sessions_node)) { return "E_SESSIONS_ARRAY"; }
+    if (!migration_is_object(messages_node)) { return "E_MESSAGES_OBJECT"; }
+    if (!migration_is_object(settings_node)) { return "E_SETTINGS_OBJECT"; }
+    if (!migration_is_bool(json_get(settings_node, "alwaysCreateSession"))) { return "E_SETTINGS_CREATE_POLICY"; }
+    if (!migration_is_string(json_get(settings_node, "selectedProvider"))) { return "E_SETTINGS_PROVIDER"; }
+    if (json_arr_len(sessions_node) > 100000) { return "E_SESSIONS_LIMIT"; }
+
+    let session_ids: ArrayList[[]u8] = make[[]u8](8);
+    let message_ids: ArrayList[[]u8] = make[[]u8](16);
+    let i: i32 = 0;
+    while (i < json_arr_len(sessions_node)) {
+        let session_node: ?*JNode = json_arr_at(sessions_node, i);
+        let sid: []u8 = json_str(json_get(session_node, "id"));
+        if (migration_seen_id(session_ids, sid)) { return _zag_str_concat("E_SESSION_DUPLICATE id=", sid); }
+        let scratch: StrBuf = sb_make();
+        if (migration_append_session(&scratch, session_node, i)) |error| { return error; }
+        push[[]u8](&session_ids, sid);
+        let rows: ?*JNode = json_get(messages_node, sid);
+        if (!migration_is_array(rows)) { return _zag_str_concat("E_MESSAGES_MISSING session=", sid); }
+        if (json_int(json_get(session_node, "messageCount")) != json_arr_len(rows) as i64) {
+            return _zag_str_concat("E_MESSAGE_COUNT session=", sid);
+        }
+        let j: i32 = 0;
+        while (j < json_arr_len(rows)) {
+            let message_node: ?*JNode = json_arr_at(rows, j);
+            let mid: []u8 = json_str(json_get(message_node, "id"));
+            if (migration_seen_id(message_ids, mid)) { return _zag_str_concat("E_MESSAGE_DUPLICATE id=", mid); }
+            let message_scratch: StrBuf = sb_make();
+            if (migration_append_message(&message_scratch, message_node, sid, j)) |error| { return error; }
+            push[[]u8](&message_ids, mid);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    let group_i: i32 = 0;
+    while (group_i < json_obj_len(messages_node)) {
+        let group: []u8 = json_obj_key_at(messages_node, group_i);
+        if (!migration_seen_id(session_ids, group)) { return _zag_str_concat("E_MESSAGES_ORPHAN session=", group); }
+        group_i = group_i + 1;
+    }
+    return "";
+}
+
+fn migration_build(root: ?*JNode) ?*MigrationOutput {
+    if (!migration_is_object(root) || !str_eq(json_str(json_get(root, "format")), "koryphaios-portable-export")) {
+        return null;
+    }
+    let sessions_node: ?*JNode = json_get(root, "sessions");
+    let messages_node: ?*JNode = json_get(root, "messages");
+    let settings_node: ?*JNode = json_get(root, "settings");
+    if (!migration_is_array(sessions_node) || !migration_is_object(messages_node) || !migration_is_object(settings_node)) {
+        return null;
+    }
+    if (!migration_is_bool(json_get(settings_node, "alwaysCreateSession")) ||
+        !migration_is_string(json_get(settings_node, "selectedProvider"))) { return null; }
+
+    let result: *MigrationOutput = new(MigrationOutput{
+        .sessions_json = "", .settings_json = "", .message_ids = make[[]u8](8),
+        .message_json = make[[]u8](8), .session_count = 0, .message_count = 0 });
+    let ids: ArrayList[[]u8] = make[[]u8](8);
+    let sessions_buf: StrBuf = sb_make();
+    sb_ch(&sessions_buf, '[' as u8);
+    let i: i32 = 0;
+    while (i < json_arr_len(sessions_node)) {
+        let sid: []u8 = json_str(json_get(json_arr_at(sessions_node, i), "id"));
+        if (migration_seen_id(ids, sid)) { return null; }
+        if (i > 0) { sb_ch(&sessions_buf, ',' as u8); }
+        if (migration_append_session(&sessions_buf, json_arr_at(sessions_node, i), i)) |_error| { return null; }
+        push[[]u8](&ids, sid);
+
+        let rows: ?*JNode = json_get(messages_node, sid);
+        if (!migration_is_array(rows)) { return null; }
+        let message_buf: StrBuf = sb_make();
+        sb_ch(&message_buf, '[' as u8);
+        let j: i32 = 0;
+        while (j < json_arr_len(rows)) {
+            if (j > 0) { sb_ch(&message_buf, ',' as u8); }
+            if (migration_append_message(&message_buf, json_arr_at(rows, j), sid, j)) |_error| { return null; }
+            result.*.message_count = result.*.message_count + 1;
+            j = j + 1;
+        }
+        sb_ch(&message_buf, ']' as u8);
+        push[[]u8](&result.*.message_ids, _zag_strdup(sid));
+        push[[]u8](&result.*.message_json, sb_slice(&message_buf));
+        i = i + 1;
+    }
+    // Reject orphan message groups rather than silently dropping user data.
+    let group_i: i32 = 0;
+    while (group_i < json_obj_len(messages_node)) {
+        if (!migration_seen_id(ids, json_obj_key_at(messages_node, group_i))) { return null; }
+        group_i = group_i + 1;
+    }
+    sb_ch(&sessions_buf, ']' as u8);
+    result.*.sessions_json = sb_slice(&sessions_buf);
+    result.*.session_count = ids.len;
+    let always: []u8 = "false";
+    if (json_bool(json_get(settings_node, "alwaysCreateSession"))) { always = "true"; }
+    result.*.settings_json = _zag_str_concat("{\"schemaVersion\":1,\"alwaysCreateSession\":",
+        _zag_str_concat(always, _zag_str_concat(",\"selectedProvider\":\"",
+            _zag_str_concat(str_escape_json(json_str(json_get(settings_node, "selectedProvider"))), "\"}"))));
+    return result;
+}
+
+fn migration_backup(path: []u8, backup: []u8) bool {
+    let current: []u8 = util_read_or_empty(path);
+    if (current.len == 0) { return true; }
+    let prior: []u8 = util_read_or_empty(backup);
+    if (prior.len > 0) { return str_eq(prior, current); }
+    return util_write_atomic(backup, current);
+}
+
+fn migration_apply(export_path: []u8, target_dir: []u8) MigrationResult {
+    let marker: []u8 = _zag_str_concat(target_dir, "/migration-state.json");
+    let marker_raw: []u8 = util_read_or_empty(marker);
+    if (marker_raw.len > 0) {
+        let marker_node: ?*JNode = json_parse(marker_raw);
+        if (json_int(json_get(marker_node, "schemaVersion")) == 1 &&
+            str_eq(json_str(json_get(marker_node, "status")), "complete")) {
+            return migration_result(MigrationStatus.already_current, false, 0, 0, 0, "migration already complete");
+        }
+        return migration_result(MigrationStatus.invalid_source, false, 0, 0, 0, "E_MIGRATION_MARKER_CORRUPT");
+    }
+    let raw: []u8 = util_read_or_empty(export_path);
+    if (raw.len == 0) { return migration_result(MigrationStatus.invalid_source, false, 0, 0, 0, "E_MIGRATION_SOURCE_MISSING"); }
+    if (raw.len > 67108864) { return migration_result(MigrationStatus.invalid_source, false, 0, 0, 0, "E_MIGRATION_SOURCE_LIMIT"); }
+    let root: ?*JNode = json_parse(raw);
+    let root_node: *JNode = new(JNode{ .null_ = true });
+    if (root) |parsed| { root_node = parsed; }
+    else { return migration_result(MigrationStatus.invalid_source, false, 0, 0, 0, "E_MIGRATION_JSON"); }
+    if (!migration_is_number(json_get(root_node, "schemaVersion"))) {
+        return migration_result(MigrationStatus.invalid_source, false, 0, 0, 0, "E_MIGRATION_VERSION_MISSING");
+    }
+    let version: i64 = json_int(json_get(root_node, "schemaVersion"));
+    if (version != 0) { return migration_result(MigrationStatus.unsupported_version, false, version, 0, 0, "E_MIGRATION_VERSION"); }
+    let validation: []u8 = migration_validate(root_node);
+    if (validation.len > 0) { return migration_result(MigrationStatus.invalid_source, false, version, 0, 0, validation); }
+    let output: ?*MigrationOutput = migration_build(root_node);
+    if (output) |built| {
+        util_mkdir(target_dir);
+        util_mkdir(_zag_str_concat(target_dir, "/messages"));
+        let backups: []u8 = _zag_str_concat(target_dir, "/migration-backups");
+        util_mkdir(backups);
+        if (!migration_backup(export_path, _zag_str_concat(backups, "/legacy-export.v0.json")) ||
+            !migration_backup(_zag_str_concat(target_dir, "/sessions.json"), _zag_str_concat(backups, "/sessions.pre-v1.json")) ||
+            !migration_backup(_zag_str_concat(target_dir, "/native-settings.json"), _zag_str_concat(backups, "/native-settings.pre-v1.json"))) {
+            return migration_result(MigrationStatus.backup_failed, false, version, 0, 0, "E_MIGRATION_BACKUP");
+        }
+        let i: i32 = 0;
+        while (i < built.*.message_ids.len) {
+            let sid: []u8 = get[[]u8](built.*.message_ids, i);
+            if (!migration_backup(_zag_str_concat(_zag_str_concat(target_dir, "/messages/"), _zag_str_concat(sid, ".json")),
+                _zag_str_concat(_zag_str_concat(backups, "/messages-"), _zag_str_concat(sid, ".pre-v1.json")))) {
+                return migration_result(MigrationStatus.backup_failed, false, version, 0, 0, "E_MIGRATION_MESSAGE_BACKUP");
+            }
+            i = i + 1;
+        }
+        if (!util_write_atomic(_zag_str_concat(target_dir, "/sessions.json"), built.*.sessions_json) ||
+            !util_write_atomic(_zag_str_concat(target_dir, "/native-settings.json"), built.*.settings_json)) {
+            return migration_result(MigrationStatus.write_failed, false, version, 0, 0, "E_MIGRATION_WRITE");
+        }
+        i = 0;
+        while (i < built.*.message_ids.len) {
+            if (!util_write_atomic(_zag_str_concat(_zag_str_concat(target_dir, "/messages/"),
+                _zag_str_concat(get[[]u8](built.*.message_ids, i), ".json")), get[[]u8](built.*.message_json, i))) {
+                return migration_result(MigrationStatus.write_failed, false, version, 0, 0, "E_MIGRATION_MESSAGE_WRITE");
+            }
+            i = i + 1;
+        }
+        if (!util_write_atomic(marker, "{\"schemaVersion\":1,\"from\":0,\"status\":\"complete\"}")) {
+            return migration_result(MigrationStatus.write_failed, false, version, 0, 0, "E_MIGRATION_MARKER_WRITE");
+        }
+        return migration_result(MigrationStatus.migrated, true, version, built.*.session_count,
+            built.*.message_count, "migration complete");
+    }
+    return migration_result(MigrationStatus.invalid_source, false, version, 0, 0, "E_MIGRATION_VALIDATION");
+}

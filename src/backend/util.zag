@@ -14,6 +14,15 @@ fn util_now_ms() i64 {
     return sec * 1000 + nsec / 1000000;
 }
 
+fn util_monotonic_us() i64 {
+    let ts: *i8 = _zag_malloc(16);
+    _zag_raw_syscall(228, 1, ts as i64, 0, 0, 0, 0);
+    let sec: i64 = rd_u64le(ts, 0);
+    let nsec: i64 = rd_u64le(ts, 8);
+    _zag_free(ts);
+    return sec * 1000000 + nsec / 1000;
+}
+
 // getrandom(2) fill.
 fn util_random_bytes(n: i32) []u8 {
     let raw: *i8 = _zag_malloc(n);

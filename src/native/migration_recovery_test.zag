@@ -1,0 +1,33 @@
+@import("migration.zag")
+
+fn recovery_check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let root: []u8 = _zag_str_concat("/tmp/koryphaios-migration-recovery-", _zag_i64_to_str(util_getpid()));
+    let export_path: []u8 = _zag_str_concat(root, "-export.json");
+    util_write_atomic(export_path, util_read_or_empty("tests/fixtures/migration/portable-v0.json"));
+    util_mkdir(root); util_mkdir(_zag_str_concat(root, "/migration-backups"));
+    util_write_atomic(_zag_str_concat(root, "/sessions.json"), "[{\"must\":\"survive\"}]");
+    util_write_atomic(_zag_str_concat(root, "/migration-backups/legacy-export.v0.json"), "different source");
+    let collision: MigrationResult = migration_apply(export_path, root);
+    recovery_check("backup collision fails closed before replacing target data",
+        collision.status == MigrationStatus.backup_failed && !collision.changed &&
+        str_eq(util_read_or_empty(_zag_str_concat(root, "/sessions.json")), "[{\"must\":\"survive\"}]") &&
+        util_read_or_empty(_zag_str_concat(root, "/migration-state.json")).len == 0, &failures);
+
+    let marker_root: []u8 = _zag_str_concat(root, "-marker");
+    util_mkdir(marker_root);
+    util_write_atomic(_zag_str_concat(marker_root, "/migration-state.json"), "not-json");
+    let bad_marker: MigrationResult = migration_apply(export_path, marker_root);
+    recovery_check("corrupt completion marker requires recovery instead of replay",
+        bad_marker.status == MigrationStatus.invalid_source &&
+        str_eq(bad_marker.diagnostic, "E_MIGRATION_MARKER_CORRUPT") && !bad_marker.changed, &failures);
+
+    if (failures == 0) { _zag_println("NATIVE MIGRATION RECOVERY: ALL PASS"); return 0; }
+    _zag_print("NATIVE MIGRATION RECOVERY: FAILURES="); _zag_println(_zag_i64_to_str(failures));
+    return 1;
+}

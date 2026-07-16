@@ -5,16 +5,17 @@
 // sub-second exchange; the application-data phase then runs nonblocking so
 // streamed responses (SSE) integrate with the event loop.
 //
-// SECURITY NOTE: this client performs the full authenticated key exchange and
-// record encryption, but does NOT validate the server certificate chain
-// (no X.509/PKI). It is used to reach known API endpoints from the local
-// machine. Certificate validation is the one deliberately deferred security
-// property — documented, not hidden.
+// SECURITY NOTE: provider requests fail closed.  The current X.509 layer
+// performs strict leaf parsing, SAN hostname matching, and validity checks,
+// but trust-chain and CertificateVerify signature verification are not yet
+// implemented.  Consequently tls_connect refuses every server certificate
+// instead of silently accepting an unauthenticated encrypted connection.
 
 @import("dns.zag")
 @import("tls_hash.zag")
 @import("tls_aead.zag")
 @import("tls_x25519.zag")
+@import("x509.zag")
 
 struct TlsConn {
     fd: i64,
@@ -47,6 +48,24 @@ fn tls_rand(n: i32) []u8 {
     let raw: *i8 = _zag_malloc(n);
     _zag_raw_syscall(318, raw as i64, n as i64, 0, 0, 0, 0);   // getrandom
     return raw[0..n];
+}
+
+fn tls_now_unix() i64 {
+    let ts: *i8 = _zag_malloc(16);
+    let rc: i64 = _zag_raw_syscall(228, 0, ts as i64, 0, 0, 0, 0); // clock_gettime(CLOCK_REALTIME)
+    if (rc != 0) { _zag_free(ts); return 0 - 1; }
+    let p: *i64 = ts as *i64;
+    let sec: i64 = p[0];
+    _zag_free(ts);
+    return sec;
+}
+
+fn tls_ct_equal(a: []u8, b: []u8) bool {
+    if (a.len != b.len) { return false; }
+    let diff: i32 = 0;
+    let i: i32 = 0;
+    while (i < a.len) { diff = diff | (((a[i] as i32) & 255) ^ ((b[i] as i32) & 255)); i = i + 1; }
+    return diff == 0;
 }
 
 // Concatenate two slices into a fresh buffer.
@@ -212,13 +231,14 @@ fn tls_decrypt_record(conn: *TlsConn, rec_payload: []u8) TlsInner {
     let nonce: []u8 = tls_nonce(conn.*.s_iv, conn.*.recv_seq);
     let maybe: ?[]u8 = aead_open(conn.*.s_key, nonce, aad[0..5], rec_payload);
     conn.*.recv_seq = conn.*.recv_seq + 1;
-    if (maybe) |plain| {
+    if (maybe) |_| {
+        let decoded: []u8 = maybe.?;
         // strip trailing zero padding, last non-zero byte = real content type
-        let end: i32 = plain.len;
-        while (end > 0 && plain[end - 1] == 0) { end = end - 1; }
+        let end: i32 = decoded.len;
+        while (end > 0 && decoded[end - 1] == 0) { end = end - 1; }
         if (end > 0) {
-            r_rtype = (plain[end - 1] as i32) & 255;
-            r_content = plain[0..end - 1];
+            r_rtype = (decoded[end - 1] as i32) & 255;
+            r_content = decoded[0..end - 1];
             r_ok = true;
         }
     }
@@ -399,6 +419,11 @@ fn tls_connect(host: []u8, port: i64) ?*TlsConn {
     let hs_accum: ArrayList[u8] = make[u8](2048);
     let hp: i32 = 0;
     let got_finished: bool = false;
+    let finished_verified: bool = false;
+    let saw_certificate: bool = false;
+    let certificate_authenticated: bool = false;
+    let saw_certificate_verify: bool = false;
+    let server_finished_key: []u8 = tls_expand_label(s_hs, "finished", "", 32);
     let attempts: i32 = 0;
     while (!got_finished && attempts < 64) {
         attempts = attempts + 1;
@@ -423,6 +448,26 @@ fn tls_connect(host: []u8, port: i64) ?*TlsConn {
                         if (hs_accum.len - hp < 4 + mlen) { go = false; }
                         else {
                             let mtype: i32 = (hs_accum.data[hp] as i32) & 255;
+                            let whole_message: []u8 = hs_accum.data[hp..hp + 4 + mlen];
+                            if (mtype == 11) {
+                                let maybe_leaf: ?[]u8 = x509_tls13_leaf(whole_message);
+                                if (maybe_leaf) |leaf_der| {
+                                    saw_certificate = true;
+                                    let now: i64 = tls_now_unix();
+                                    if (now >= 0) { certificate_authenticated = x509_validate_server(leaf_der, host, now); }
+                                }
+                            } else if (mtype == 15) {
+                                // Presence is tracked, but authentication remains false until
+                                // its advertised signature algorithm is actually verified.
+                                saw_certificate_verify = true;
+                            } else if (mtype == 20) {
+                                // Finished authenticates the handshake-secret transcript.  Its
+                                // verify_data covers all messages before Finished itself.
+                                if (mlen == 32) {
+                                    let expected: []u8 = hmac_sha256(server_finished_key, sha256_digest(&th));
+                                    finished_verified = tls_ct_equal(expected, whole_message[4..36]);
+                                }
+                            }
                             sha256_update(&th, hs_accum.data[hp..hp + 4 + mlen]);
                             if (mtype == 20) { got_finished = true; go = false; }
                             hp = hp + 4 + mlen;
@@ -434,7 +479,12 @@ fn tls_connect(host: []u8, port: i64) ?*TlsConn {
             }
         }
     }
-    if (!got_finished) { return null; }
+    if (!got_finished || !finished_verified || !saw_certificate || !saw_certificate_verify || !certificate_authenticated) {
+        // Until chain/signature support is complete, certificate_authenticated
+        // remains false by construction.  Never send provider data on this fd.
+        net_close(fd);
+        return null;
+    }
 
     // 5. application key schedule
     let th_sf: []u8 = sha256_digest(&th);   // CH .. server Finished

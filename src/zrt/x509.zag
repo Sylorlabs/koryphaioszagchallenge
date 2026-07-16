@@ -1,0 +1,362 @@
+// zrt/x509.zag — bounded DER/X.509 parsing for the native TLS client.
+//
+// This module deliberately separates leaf-certificate syntax/policy checks
+// from authentication.  x509_check_leaf verifies strict DER structure, the
+// validity interval, and dNSName subjectAltName matching.  It does NOT claim
+// trust.  x509_validate_server remains fail-closed until certificate-signature
+// verification and system trust-chain building are supplied.
+
+struct DerTlv {
+    tag: i32,
+    start: i32,
+    body: i32,
+    end: i32,
+    next: i32,
+    ok: bool,
+}
+
+struct X509Leaf {
+    not_before: i64,
+    not_after: i64,
+    san_der: []u8,
+    tbs_der: []u8,
+    signature_algorithm_der: []u8,
+    signature_bits: []u8,
+    ok: bool,
+}
+
+struct X509Check {
+    der_ok: bool,
+    hostname_ok: bool,
+    time_ok: bool,
+    chain_ok: bool,
+    signature_ok: bool,
+    ok: bool,
+}
+
+fn x509_empty_tlv() DerTlv {
+    return DerTlv{ .tag = 0, .start = 0, .body = 0, .end = 0, .next = 0, .ok = false };
+}
+
+// Read one strict DER TLV inside [off, limit).  BER indefinite lengths,
+// non-minimal long lengths, high-tag-number form, and out-of-bounds values are
+// rejected.  X.509 inputs are network-controlled, so all arithmetic is kept
+// bounded to i32 before slicing.
+fn der_read(data: []u8, off: i32, limit: i32) DerTlv {
+    if (off < 0 || limit < off || limit > data.len || off + 2 > limit) { return x509_empty_tlv(); }
+    let tag: i32 = (data[off] as i32) & 255;
+    if ((tag & 31) == 31) { return x509_empty_tlv(); }
+    let first: i32 = (data[off + 1] as i32) & 255;
+    let p: i32 = off + 2;
+    let len: i32 = 0;
+    if (first < 128) {
+        len = first;
+    } else {
+        let count: i32 = first & 127;
+        if (count == 0 || count > 3 || p + count > limit) { return x509_empty_tlv(); }
+        if (data[p] == 0) { return x509_empty_tlv(); }
+        let i: i32 = 0;
+        while (i < count) {
+            if (len > 8388607) { return x509_empty_tlv(); }
+            len = (len << 8) | ((data[p + i] as i32) & 255);
+            i = i + 1;
+        }
+        if (len < 128) { return x509_empty_tlv(); }
+        p = p + count;
+    }
+    if (len < 0 || p > limit || len > limit - p) { return x509_empty_tlv(); }
+    return DerTlv{ .tag = tag, .start = off, .body = p, .end = p + len, .next = p + len, .ok = true };
+}
+
+fn x509_digit(b: u8) i32 {
+    let v: i32 = (b as i32) & 255;
+    if (v < 48 || v > 57) { return 0 - 1; }
+    return v - 48;
+}
+
+fn x509_dec2(s: []u8, off: i32) i32 {
+    if (off < 0 || off + 2 > s.len) { return 0 - 1; }
+    let a: i32 = x509_digit(s[off]);
+    let b: i32 = x509_digit(s[off + 1]);
+    if (a < 0 || b < 0) { return 0 - 1; }
+    return a * 10 + b;
+}
+
+fn x509_dec4(s: []u8, off: i32) i32 {
+    let a: i32 = x509_dec2(s, off);
+    let b: i32 = x509_dec2(s, off + 2);
+    if (a < 0 || b < 0) { return 0 - 1; }
+    return a * 100 + b;
+}
+
+fn x509_leap(year: i32) bool {
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+fn x509_month_days(year: i32, month: i32) i32 {
+    if (month == 2) { if (x509_leap(year)) { return 29; } return 28; }
+    if (month == 4 || month == 6 || month == 9 || month == 11) { return 30; }
+    if (month >= 1 && month <= 12) { return 31; }
+    return 0;
+}
+
+// Convert a strict UTC calendar value to Unix seconds.  X.509 dates before
+// 1970 are rejected because they cannot be valid for a current server cert.
+fn x509_epoch(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: i32) i64 {
+    if (year < 1970 || year > 9999 || month < 1 || month > 12) { return 0 - 1; }
+    let md: i32 = x509_month_days(year, month);
+    if (day < 1 || day > md || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) { return 0 - 1; }
+    let days: i64 = 0;
+    let y: i32 = 1970;
+    while (y < year) {
+        if (x509_leap(y)) { days = days + 366; } else { days = days + 365; }
+        y = y + 1;
+    }
+    let m: i32 = 1;
+    while (m < month) { days = days + (x509_month_days(year, m) as i64); m = m + 1; }
+    days = days + ((day - 1) as i64);
+    return days * 86400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64);
+}
+
+fn x509_parse_time(tag: i32, value: []u8) i64 {
+    let year: i32 = 0;
+    let p: i32 = 0;
+    if (tag == 23) {
+        if (value.len != 13 || value[12] != ('Z' as u8)) { return 0 - 1; }
+        let yy: i32 = x509_dec2(value, 0);
+        if (yy < 0) { return 0 - 1; }
+        if (yy >= 50) { year = 1900 + yy; } else { year = 2000 + yy; }
+        p = 2;
+    } else if (tag == 24) {
+        if (value.len != 15 || value[14] != ('Z' as u8)) { return 0 - 1; }
+        year = x509_dec4(value, 0);
+        p = 4;
+    } else {
+        return 0 - 1;
+    }
+    return x509_epoch(year, x509_dec2(value, p), x509_dec2(value, p + 2), x509_dec2(value, p + 4), x509_dec2(value, p + 6), x509_dec2(value, p + 8));
+}
+
+fn x509_oid_san(data: []u8, oid: DerTlv) bool {
+    return oid.ok && oid.tag == 6 && oid.end - oid.body == 3
+        && data[oid.body] == 85 && data[oid.body + 1] == 29 && data[oid.body + 2] == 17;
+}
+
+fn x509_ascii_lower(b: u8) u8 {
+    let v: i32 = (b as i32) & 255;
+    if (v >= 65 && v <= 90) { return (v + 32) as u8; }
+    return b;
+}
+
+fn x509_dns_equal(a: []u8, b: []u8) bool {
+    if (a.len != b.len) { return false; }
+    let i: i32 = 0;
+    while (i < a.len) {
+        let av: i32 = (a[i] as i32) & 255;
+        let bv: i32 = (b[i] as i32) & 255;
+        if (av == 0 || bv == 0 || av > 127 || bv > 127 || x509_ascii_lower(a[i]) != x509_ascii_lower(b[i])) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// RFC 6125-style DNS matching: exact names, or a wildcard comprising the
+// entire left-most label.  The wildcard consumes exactly one non-empty label.
+fn x509_dns_matches(pattern: []u8, host: []u8) bool {
+    if (pattern.len >= 3 && pattern[0] == ('*' as u8) && pattern[1] == ('.' as u8)) {
+        let dot: i32 = 0 - 1;
+        let i: i32 = 0;
+        while (i < host.len && dot < 0) { if (host[i] == ('.' as u8)) { dot = i; } i = i + 1; }
+        if (dot <= 0 || dot + 1 >= host.len) { return false; }
+        return x509_dns_equal(pattern[2..pattern.len], host[dot + 1..host.len]);
+    }
+    return x509_dns_equal(pattern, host);
+}
+
+fn x509_san_matches(san_der: []u8, host: []u8) bool {
+    let seq: DerTlv = der_read(san_der, 0, san_der.len);
+    if (!seq.ok || seq.tag != 48 || seq.next != san_der.len || host.len == 0) { return false; }
+    let p: i32 = seq.body;
+    while (p < seq.end) {
+        let name: DerTlv = der_read(san_der, p, seq.end);
+        if (!name.ok) { return false; }
+        if (name.tag == 130 && x509_dns_matches(san_der[name.body..name.end], host)) { return true; }
+        p = name.next;
+    }
+    return false;
+}
+
+fn x509_san_valid(san_der: []u8) bool {
+    let seq: DerTlv = der_read(san_der, 0, san_der.len);
+    if (!seq.ok || seq.tag != 48 || seq.next != san_der.len) { return false; }
+    let p: i32 = seq.body;
+    let dns_count: i32 = 0;
+    while (p < seq.end) {
+        let name: DerTlv = der_read(san_der, p, seq.end);
+        if (!name.ok || name.next <= p) { return false; }
+        if (name.tag == 130) {
+            let n: i32 = name.end - name.body;
+            if (n == 0 || n > 253) { return false; }
+            let i: i32 = name.body;
+            while (i < name.end) {
+                let b: i32 = (san_der[i] as i32) & 255;
+                if (b == 0 || b > 127) { return false; }
+                i = i + 1;
+            }
+            dns_count = dns_count + 1;
+        }
+        p = name.next;
+    }
+    return dns_count > 0;
+}
+
+fn x509_empty_leaf() X509Leaf {
+    return X509Leaf{ .not_before = 0, .not_after = 0, .san_der = "", .tbs_der = "", .signature_algorithm_der = "", .signature_bits = "", .ok = false };
+}
+
+// Parse the certificate envelope and the security-relevant TBSCertificate
+// fields.  SAN is mandatory; Common Name fallback is intentionally forbidden.
+fn x509_parse_leaf(cert: []u8) X509Leaf {
+    let out: X509Leaf = x509_empty_leaf();
+    let outer: DerTlv = der_read(cert, 0, cert.len);
+    if (!outer.ok || outer.tag != 48 || outer.next != cert.len) { return out; }
+    let tbs: DerTlv = der_read(cert, outer.body, outer.end);
+    if (!tbs.ok || tbs.tag != 48) { return out; }
+    let alg: DerTlv = der_read(cert, tbs.next, outer.end);
+    if (!alg.ok || alg.tag != 48) { return out; }
+    let sig: DerTlv = der_read(cert, alg.next, outer.end);
+    if (!sig.ok || sig.tag != 3 || sig.next != outer.end || sig.end - sig.body < 2 || cert[sig.body] != 0) { return out; }
+
+    let p: i32 = tbs.body;
+    let f: DerTlv = der_read(cert, p, tbs.end);
+    if (!f.ok) { return out; }
+    if (f.tag == 160) { p = f.next; }
+    // serialNumber, signature, issuer
+    let serial: DerTlv = der_read(cert, p, tbs.end);
+    if (!serial.ok || serial.tag != 2 || serial.end == serial.body) { return out; }
+    p = serial.next;
+    let tbs_alg: DerTlv = der_read(cert, p, tbs.end);
+    if (!tbs_alg.ok || tbs_alg.tag != 48) { return out; }
+    p = tbs_alg.next;
+    let issuer: DerTlv = der_read(cert, p, tbs.end);
+    if (!issuer.ok || issuer.tag != 48) { return out; }
+    p = issuer.next;
+    let validity: DerTlv = der_read(cert, p, tbs.end);
+    if (!validity.ok || validity.tag != 48) { return out; }
+    let nb: DerTlv = der_read(cert, validity.body, validity.end);
+    if (!nb.ok) { return out; }
+    let na: DerTlv = der_read(cert, nb.next, validity.end);
+    if (!na.ok || na.next != validity.end) { return out; }
+    let not_before: i64 = x509_parse_time(nb.tag, cert[nb.body..nb.end]);
+    let not_after: i64 = x509_parse_time(na.tag, cert[na.body..na.end]);
+    if (not_before < 0 || not_after < not_before) { return out; }
+    p = validity.next;
+    let subject: DerTlv = der_read(cert, p, tbs.end);
+    if (!subject.ok || subject.tag != 48) { return out; }
+    p = subject.next;
+    let spki: DerTlv = der_read(cert, p, tbs.end);
+    if (!spki.ok || spki.tag != 48) { return out; }
+    p = spki.next;
+
+    let san: []u8 = "";
+    while (p < tbs.end) {
+        let optional: DerTlv = der_read(cert, p, tbs.end);
+        if (!optional.ok) { return out; }
+        if (optional.tag == 163) {
+            let exts: DerTlv = der_read(cert, optional.body, optional.end);
+            if (!exts.ok || exts.tag != 48 || exts.next != optional.end) { return out; }
+            let ep: i32 = exts.body;
+            while (ep < exts.end) {
+                let ext: DerTlv = der_read(cert, ep, exts.end);
+                if (!ext.ok || ext.tag != 48) { return out; }
+                let oid: DerTlv = der_read(cert, ext.body, ext.end);
+                if (!oid.ok || oid.tag != 6) { return out; }
+                let vp: i32 = oid.next;
+                let maybe_critical: DerTlv = der_read(cert, vp, ext.end);
+                if (!maybe_critical.ok) { return out; }
+                if (maybe_critical.tag == 1) { vp = maybe_critical.next; }
+                let value: DerTlv = der_read(cert, vp, ext.end);
+                if (!value.ok || value.tag != 4 || value.next != ext.end) { return out; }
+                if (x509_oid_san(cert, oid)) {
+                    if (san.len != 0) { return out; }
+                    san = cert[value.body..value.end];
+                }
+                ep = ext.next;
+            }
+        } else if (optional.tag != 129 && optional.tag != 130) {
+            return out;
+        }
+        p = optional.next;
+    }
+    if (san.len == 0) { return out; }
+    // Validate the nested GeneralNames DER now, not only during matching.
+    if (!x509_san_valid(san)) { return out; }
+    out.not_before = not_before;
+    out.not_after = not_after;
+    out.san_der = san;
+    out.tbs_der = cert[tbs.start..tbs.next];
+    out.signature_algorithm_der = cert[alg.start..alg.next];
+    out.signature_bits = cert[sig.body + 1..sig.end];
+    out.ok = true;
+    return out;
+}
+
+fn x509_check_leaf(cert: []u8, host: []u8, now_unix: i64) X509Check {
+    let leaf: X509Leaf = x509_parse_leaf(cert);
+    let host_ok: bool = leaf.ok && x509_san_matches(leaf.san_der, host);
+    let time_ok: bool = leaf.ok && now_unix >= leaf.not_before && now_unix <= leaf.not_after;
+    return X509Check{
+        .der_ok = leaf.ok,
+        .hostname_ok = host_ok,
+        .time_ok = time_ok,
+        .chain_ok = false,
+        .signature_ok = false,
+        .ok = false,
+    };
+}
+
+// Full server authentication is intentionally unavailable until system-root
+// chain building and signature verification land.  Callers cannot opt out or
+// turn preflight checks into a trusted result.
+fn x509_validate_server(cert: []u8, host: []u8, now_unix: i64) bool {
+    let check: X509Check = x509_check_leaf(cert, host, now_unix);
+    return check.ok;
+}
+
+fn x509_u24(data: []u8, off: i32) i32 {
+    if (off < 0 || off + 3 > data.len) { return 0 - 1; }
+    return (((data[off] as i32) & 255) << 16)
+        | (((data[off + 1] as i32) & 255) << 8)
+        | ((data[off + 2] as i32) & 255);
+}
+
+// Extract the leaf DER from one complete TLS 1.3 Certificate handshake
+// message (including its 4-byte handshake header).  Every enclosing length is
+// checked; trailing or truncated data fails closed.
+fn x509_tls13_leaf(message: []u8) ?[]u8 {
+    if (message.len < 12 || message[0] != 11) { return null; }
+    let message_len: i32 = x509_u24(message, 1);
+    if (message_len < 0 || message_len != message.len - 4) { return null; }
+    let p: i32 = 4;
+    let context_len: i32 = (message[p] as i32) & 255;
+    p = p + 1;
+    if (context_len > message.len - p) { return null; }
+    p = p + context_len;
+    let list_len: i32 = x509_u24(message, p);
+    if (list_len < 0) { return null; }
+    p = p + 3;
+    if (list_len != message.len - p || list_len < 5) { return null; }
+    let cert_len: i32 = x509_u24(message, p);
+    if (cert_len <= 0) { return null; }
+    p = p + 3;
+    if (cert_len > message.len - p - 2) { return null; }
+    let cert_start: i32 = p;
+    let cert_end: i32 = p + cert_len;
+    p = cert_end;
+    let extensions_len: i32 = (((message[p] as i32) & 255) << 8) | ((message[p + 1] as i32) & 255);
+    p = p + 2;
+    if (extensions_len > message.len - p) { return null; }
+    // Additional chain entries may follow and are consumed by the future
+    // trust-chain builder.  The leaf entry itself must be fully bounded.
+    return message[cert_start..cert_end];
+}

@@ -1,0 +1,104 @@
+// Explicit-key encrypted credential vault fallback.
+//
+// Format: "KPV1" || nonce[12] || sealed_length_le32 ||
+//         ChaCha20-Poly1305(ciphertext || tag).
+// The caller must provide a 32-byte high-entropy key. Password input is
+// intentionally rejected until Zag has a memory-hard password KDF.
+
+@import("../zrt/tls_aead.zag")
+@import("../backend/util.zag")
+
+enum VaultStatus {
+    ok,
+    invalid_key,
+    random_failed,
+    malformed,
+    authentication_failed,
+    io_error,
+}
+
+struct VaultResult {
+    status: VaultStatus,
+    data: []u8,
+}
+
+fn vault_result(status: VaultStatus, data: []u8) VaultResult {
+    return VaultResult{ .status = status, .data = data };
+}
+
+fn vault_aad(scope: []u8) []u8 {
+    return _zag_str_concat("koryphaios-vault-v1\0", scope);
+}
+
+fn vault_u32_at(data: []u8, off: i32) i64 {
+    return (data[off] as i64) | ((data[off + 1] as i64) << 8) |
+        ((data[off + 2] as i64) << 16) | ((data[off + 3] as i64) << 24);
+}
+
+fn vault_wipe(data: []u8) void {
+    let i: i32 = 0;
+    while (i < data.len) { data[i] = 0 as u8; i = i + 1; }
+}
+
+fn vault_seal_with_nonce(key: []u8, nonce: []u8, scope: []u8, secret: []u8) VaultResult {
+    if (key.len != 32) { return vault_result(VaultStatus.invalid_key, ""); }
+    if (nonce.len != 12 || secret.len > 1048576) { return vault_result(VaultStatus.malformed, ""); }
+    let aad: []u8 = vault_aad(scope);
+    let sealed: []u8 = aead_seal(key, nonce, aad, secret);
+    let total: i32 = 20 + sealed.len;
+    let raw: *i8 = _zag_malloc(total);
+    let out: *u8 = raw as *u8;
+    out[0] = 'K' as u8; out[1] = 'P' as u8; out[2] = 'V' as u8; out[3] = '1' as u8;
+    let i: i32 = 0;
+    while (i < 12) { out[4 + i] = nonce[i]; i = i + 1; }
+    let n: i64 = sealed.len as i64;
+    out[16] = (n & 255) as u8; out[17] = ((n >> 8) & 255) as u8;
+    out[18] = ((n >> 16) & 255) as u8; out[19] = ((n >> 24) & 255) as u8;
+    i = 0;
+    while (i < sealed.len) { out[20 + i] = sealed[i]; i = i + 1; }
+    vault_wipe(sealed);
+    _zag_free(_zag_slice_ptr(sealed) as *i8);
+    return vault_result(VaultStatus.ok, out[0..total]);
+}
+
+fn vault_seal(key: []u8, scope: []u8, secret: []u8) VaultResult {
+    if (key.len != 32) { return vault_result(VaultStatus.invalid_key, ""); }
+    let raw: *i8 = _zag_malloc(12);
+    let rc: i64 = _zag_raw_syscall(318, raw as i64, 12, 0, 0, 0, 0);
+    if (rc != 12) { vault_wipe(raw[0..12]); _zag_free(raw); return vault_result(VaultStatus.random_failed, ""); }
+    let result: VaultResult = vault_seal_with_nonce(key, raw[0..12], scope, secret);
+    vault_wipe(raw[0..12]);
+    _zag_free(raw);
+    return result;
+}
+
+fn vault_open(key: []u8, scope: []u8, encoded: []u8) VaultResult {
+    if (key.len != 32) { return vault_result(VaultStatus.invalid_key, ""); }
+    if (encoded.len < 36 || encoded[0] != ('K' as u8) || encoded[1] != ('P' as u8) ||
+        encoded[2] != ('V' as u8) || encoded[3] != ('1' as u8)) {
+        return vault_result(VaultStatus.malformed, "");
+    }
+    let sealed_len: i64 = vault_u32_at(encoded, 16);
+    if (sealed_len < 16 || sealed_len > 1048592 || sealed_len != (encoded.len - 20) as i64) {
+        return vault_result(VaultStatus.malformed, "");
+    }
+    let aad: []u8 = vault_aad(scope);
+    let opened: ?[]u8 = aead_open(key, encoded[4..16], aad, encoded[20..encoded.len]);
+    if (opened) |plaintext| { return vault_result(VaultStatus.ok, plaintext); }
+    return vault_result(VaultStatus.authentication_failed, "");
+}
+
+fn vault_write(path: []u8, key: []u8, scope: []u8, secret: []u8) VaultStatus {
+    let sealed: VaultResult = vault_seal(key, scope, secret);
+    if (sealed.status != VaultStatus.ok) { return sealed.status; }
+    if (!util_write_atomic(path, sealed.data) || util_chmod(path, 384) != 0) {
+        return VaultStatus.io_error;
+    }
+    return VaultStatus.ok;
+}
+
+fn vault_read(path: []u8, key: []u8, scope: []u8) VaultResult {
+    let raw: []u8 = util_read_or_empty(path);
+    if (raw.len == 0) { return vault_result(VaultStatus.io_error, ""); }
+    return vault_open(key, scope, raw);
+}

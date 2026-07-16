@@ -69,6 +69,49 @@ else
   sed -n '1,80p' /tmp/koryphaios-zag-core-build.log >&2
 fi
 
+if "$znc" probe/x509test.zag -o build/x509test --analyze-strict >/tmp/koryphaios-x509-build.log 2>&1 &&
+   x509_output="$(build/x509test)" &&
+   printf '%s\n' "$x509_output" | rg -q 'X509 TESTS: 20 checks, 0 failed'; then
+  record tls-x509-foundation pass strict-der-san-hostname-validity-tls13-leaf-fail-closed
+else
+  record tls-x509-foundation fail failed
+  sed -n '1,80p' /tmp/koryphaios-x509-build.log >&2
+fi
+
+if "$znc" src/native/secret_storage_test.zag -o build/secret_storage_test --analyze-strict >/tmp/koryphaios-secret-build.log 2>&1 &&
+   secret_output="$(build/secret_storage_test)" &&
+   printf '%s\n' "$secret_output" | rg -q 'SECRET STORAGE: ALL PASS'; then
+  record secret-storage-foundation pass encrypted-vault-aead-atomic-0600-secret-service-fail-closed
+else
+  record secret-storage-foundation fail failed
+  sed -n '1,80p' /tmp/koryphaios-secret-build.log >&2
+fi
+
+migration_ok=1
+if ! "$znc" src/native/migration_test.zag -o build/migration_test --analyze-strict >/tmp/koryphaios-migration-build.log 2>&1 ||
+   ! build/migration_test | rg -q 'NATIVE MIGRATION: ALL PASS'; then
+  migration_ok=0
+fi
+if ! "$znc" src/native/migration_recovery_test.zag -o build/migration_recovery_test --analyze-strict >/tmp/koryphaios-migration-recovery-build.log 2>&1 ||
+   ! build/migration_recovery_test | rg -q 'NATIVE MIGRATION RECOVERY: ALL PASS'; then
+  migration_ok=0
+fi
+if [[ "$migration_ok" == 1 ]]; then
+  migration_root="$(mktemp -d /tmp/koryphaios-migration-cli.XXXXXX)"
+  mkdir -p "$migration_root/project"
+  if build/koryphaios --project "$migration_root/project" --migrate tests/fixtures/migration/portable-v0.json | rg -q 'migration: PASS migrated sessions=2 messages=3' &&
+     build/koryphaios --project "$migration_root/project" --migrate tests/fixtures/migration/portable-v0.json | rg -q 'migration: PASS already-current'; then
+    record migration-foundation pass validation-backup-atomic-idempotent-cli
+  else
+    record migration-foundation fail cli-integration
+  fi
+  rm -rf "$migration_root"
+else
+  record migration-foundation fail unit-or-recovery
+  sed -n '1,80p' /tmp/koryphaios-migration-build.log >&2
+  sed -n '1,80p' /tmp/koryphaios-migration-recovery-build.log >&2
+fi
+
 if rg -n -i 'coming soon|placeholder|fake provider|estimated tokens' src/native >/tmp/koryphaios-placeholder-audit.log; then
   record placeholder-audit fail forbidden-native-placeholder
   sed -n '1,40p' /tmp/koryphaios-placeholder-audit.log >&2
@@ -107,12 +150,21 @@ else
   record packaging-foundation fail package-selftest
 fi
 
+if performance_output="$(tools/performance-gate.sh build/koryphaios)"; then
+  record performance-foundation pass "$(printf '%s' "$performance_output" | sed 's/^performance-gate: PASS //')"
+else
+  record performance-foundation fail threshold
+fi
+
 case "$profile" in
   foundation) ;;
   release)
     record parity fail unresolved-native-workflows
     record tls-pki fail x509-chain-validation-not-implemented
+    record secret-service fail encrypted-live-item-operations-not-implemented
+    record migration-completeness fail sqlite-and-remaining-domains-not-implemented
     record accessibility fail atspi-not-implemented
+    record performance-live fail x11-idle-cpu-and-p95-input-latency-not-proven
     record packaging fail signed-update-manifest-not-provisioned
     ;;
   *)

@@ -1,0 +1,67 @@
+@import("migration.zag")
+
+fn migration_check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn migration_test_success(root: []u8, failures: *i32) void {
+    let export_path: []u8 = _zag_str_concat(root, "-export.json");
+    let valid: []u8 = util_read_or_empty("tests/fixtures/migration/portable-v0.json");
+    util_write_atomic(export_path, valid);
+    util_mkdir(root); util_mkdir(_zag_str_concat(root, "/messages"));
+    util_write_atomic(_zag_str_concat(root, "/sessions.json"), "[{\"old\":true}]");
+    util_write_atomic(_zag_str_concat(root, "/native-settings.json"), "{\"old\":true}");
+    util_write_atomic(_zag_str_concat(root, "/messages/legacySession01.json"), "[{\"old\":true}]");
+
+    let migrated: MigrationResult = migration_apply(export_path, root);
+    migration_check("valid v0 export migrates sessions messages and settings", migrated.status == MigrationStatus.migrated &&
+        migrated.changed && migrated.sessions == 2 && migrated.messages == 3 &&
+        str_index_of(util_read_or_empty(_zag_str_concat(root, "/sessions.json")), "Legacy first") >= 0 &&
+        str_index_of(util_read_or_empty(_zag_str_concat(root, "/messages/legacySession01.json")), "portable export") >= 0 &&
+        str_index_of(util_read_or_empty(_zag_str_concat(root, "/native-settings.json")), "claude-code") >= 0, failures);
+    migration_check("migration preserves exact provider usage instead of estimating",
+        str_index_of(util_read_or_empty(_zag_str_concat(root, "/messages/legacySession01.json")), "\"tokensIn\":12") >= 0 &&
+        str_index_of(util_read_or_empty(_zag_str_concat(root, "/messages/legacySession01.json")), "\"tokensOut\":7") >= 0, failures);
+    migration_check("all existing targets and the source are backed up before replacement",
+        str_eq(util_read_or_empty(_zag_str_concat(root, "/migration-backups/sessions.pre-v1.json")), "[{\"old\":true}]") &&
+        str_eq(util_read_or_empty(_zag_str_concat(root, "/migration-backups/native-settings.pre-v1.json")), "{\"old\":true}") &&
+        str_eq(util_read_or_empty(_zag_str_concat(root, "/migration-backups/messages-legacySession01.pre-v1.json")), "[{\"old\":true}]") &&
+        str_eq(util_read_or_empty(_zag_str_concat(root, "/migration-backups/legacy-export.v0.json")), valid), failures);
+
+    let sessions_once: []u8 = util_read_or_empty(_zag_str_concat(root, "/sessions.json"));
+    let messages_once: []u8 = util_read_or_empty(_zag_str_concat(root, "/messages/legacySession01.json"));
+    let repeated: MigrationResult = migration_apply(export_path, root);
+    migration_check("completed migration is idempotent and performs no second write",
+        repeated.status == MigrationStatus.already_current && !repeated.changed &&
+        str_eq(sessions_once, util_read_or_empty(_zag_str_concat(root, "/sessions.json"))) &&
+        str_eq(messages_once, util_read_or_empty(_zag_str_concat(root, "/messages/legacySession01.json"))), failures);
+}
+
+fn migration_test_invalid(root: []u8, failures: *i32) void {
+    let corrupt_root: []u8 = _zag_str_concat(root, "-corrupt");
+    let corrupt_export: []u8 = _zag_str_concat(root, "-corrupt.json");
+    util_write_atomic(corrupt_export, util_read_or_empty("tests/fixtures/migration/corrupt-orphan-v0.json"));
+    let corrupt: MigrationResult = migration_apply(corrupt_export, corrupt_root);
+    migration_check("dry validation rejects corruption before creating target state",
+        corrupt.status == MigrationStatus.invalid_source && str_eq(corrupt.diagnostic, "E_MESSAGES_ORPHAN session=orphanSession") &&
+        util_read_or_empty(_zag_str_concat(corrupt_root, "/sessions.json")).len == 0 &&
+        util_read_or_empty(_zag_str_concat(corrupt_root, "/migration-backups/legacy-export.v0.json")).len == 0, failures);
+
+    let future_root: []u8 = _zag_str_concat(root, "-future");
+    let future_export: []u8 = _zag_str_concat(root, "-future.json");
+    util_write_atomic(future_export, util_read_or_empty("tests/fixtures/migration/future-v2.json"));
+    let future: MigrationResult = migration_apply(future_export, future_root);
+    migration_check("newer schema fails closed without mutation", future.status == MigrationStatus.unsupported_version &&
+        future.source_version == 2 && util_read_or_empty(_zag_str_concat(future_root, "/sessions.json")).len == 0, failures);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let root: []u8 = _zag_str_concat("/tmp/koryphaios-migration-", _zag_i64_to_str(util_getpid()));
+    migration_test_success(root, &failures);
+    migration_test_invalid(root, &failures);
+    if (failures == 0) { _zag_println("NATIVE MIGRATION: ALL PASS"); return 0; }
+    _zag_print("NATIVE MIGRATION: FAILURES="); _zag_println(_zag_i64_to_str(failures));
+    return 1;
+}

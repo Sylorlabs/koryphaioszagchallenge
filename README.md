@@ -18,9 +18,12 @@ implementation is present only in Git history and in the reference snapshot
 used for parity inventory.
 
 The work still required before release is deliberately documented in
-docs/RELEASE_STATUS.md and docs/PARITY_BASELINE.md. In particular, X.509 chain
-validation, Secret Service storage, full workflow migration, AT-SPI, packaging,
-and performance evidence are not represented as completed.
+docs/RELEASE_STATUS.md and docs/PARITY_BASELINE.md. The repository now includes
+fail-closed X.509 leaf preflight, authenticated encrypted-vault foundations,
+portable legacy session/message migration, static packaging, and headless
+performance gates. Full trust-chain validation, live Secret Service operations,
+full workflow/data migration, AT-SPI, signed updates, and live-X11 performance
+evidence are not represented as completed.
 
 ## Build and run
 
@@ -34,6 +37,8 @@ pinned as a Git submodule.
     ./build/koryphaios --capture /tmp/koryphaios-native.bmp --width 1280 --height 800 --scale 2
     ./build/koryphaios --x11-selftest
     ./build/koryphaios --project /path/to/project
+    ./build/koryphaios --project /path/to/project --migrate /path/to/portable-export.json
+    ./build/koryphaios --performance-selftest
     ./build/koryphaios --diagnostics
     ./build/koryphaios
 
@@ -45,8 +50,9 @@ pinned as a Git submodule.
 The foundation gate must pass for every milestone. It includes strict build,
 core persistence/recovery, keyboard/pointer workflow, browser-boundary and
 forbidden-marker audits, repository/source/secret/toolchain provenance policy,
-four deterministic captures including HiDPI, and byte-identical capture
-comparison. The release gate intentionally fails closed
+TLS/X.509 preflight, encrypted-secret storage, portable migration, measured
+performance, four deterministic captures including HiDPI, and byte-identical
+capture comparison. The release gate intentionally fails closed
 while release-required capability evidence is unresolved.
 
 ## Provenance

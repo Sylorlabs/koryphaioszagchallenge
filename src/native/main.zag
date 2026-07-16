@@ -4,6 +4,7 @@
 @import("fb.zag")
 @import("x11.zag")
 @import("core.zag")
+@import("migration.zag")
 @import("../../zagstd/list.zag") as list
 
 struct NativeUi {
@@ -517,6 +518,59 @@ fn run_x11_selftest() i32 {
     return 0;
 }
 
+fn run_performance_selftest() i32 {
+    let started: i64 = util_monotonic_us();
+    let root: []u8 = _zag_str_concat("/tmp/koryphaios-perf-", _zag_i64_to_str(util_getpid()));
+    let core: *AppCore = core_open_test(root);
+    let ui: *NativeUi = ui_new(core, true);
+    let startup_us: i64 = util_monotonic_us() - started;
+    let i: i32 = 0;
+    while (i < 10000) {
+        core_event(core, AppEventKind.agent_status, "benchmark", "feed event", "");
+        i = i + 1;
+    }
+    let f: FB = fb_new(1280, 720);
+    let frame_max_us: i64 = 0;
+    let frame: i32 = 0;
+    while (frame < 120) {
+        let before: i64 = util_monotonic_us();
+        render(&f, ui, f.w, f.h);
+        let elapsed: i64 = util_monotonic_us() - before;
+        if (elapsed > frame_max_us) { frame_max_us = elapsed; }
+        frame = frame + 1;
+    }
+    let ok: bool = core.*.ready && startup_us < 750000 && frame_max_us <= 16700 && core.*.events.len >= 10000;
+    _zag_print("performance-selftest: ");
+    if (ok) { _zag_print("PASS"); } else { _zag_print("FAIL"); }
+    _zag_print(" startup_us="); _zag_print(_zag_i64_to_str(startup_us));
+    _zag_print(" frame_max_us="); _zag_print(_zag_i64_to_str(frame_max_us));
+    _zag_print(" feed_events="); _zag_println(_zag_i64_to_str(core.*.events.len as i64));
+    if (ok) { return 0; }
+    return 1;
+}
+
+fn run_migration() i32 {
+    let source: []u8 = arg_after("--migrate", "");
+    if (source.len == 0 || source[0] == '-' as u8) {
+        _zag_eprintln("migration: FAIL E_SOURCE_ARGUMENT expected --migrate <portable-export.json>");
+        return 2;
+    }
+    let result: MigrationResult = migration_apply(source, data_dir_from_args());
+    if (result.status == MigrationStatus.migrated) {
+        _zag_print("migration: PASS migrated sessions=");
+        _zag_print(_zag_i64_to_str(result.sessions as i64));
+        _zag_print(" messages=");
+        _zag_println(_zag_i64_to_str(result.messages as i64));
+        return 0;
+    }
+    if (result.status == MigrationStatus.already_current) {
+        _zag_println("migration: PASS already-current");
+        return 0;
+    }
+    _zag_eprintln(_zag_str_concat("migration: FAIL ", result.diagnostic));
+    return 1;
+}
+
 fn run_x11() i32 {
     let core: *AppCore = core_open(data_dir_from_args());
     let ui: *NativeUi = ui_new(core, arg_has("--safe-mode"));
@@ -556,6 +610,8 @@ fn main() i32 {
         return 0;
     }
     if (arg_has("--headless-test") || arg_has("--capture")) { return run_headless(); }
+    if (arg_has("--performance-selftest")) { return run_performance_selftest(); }
+    if (arg_has("--migrate")) { return run_migration(); }
     if (arg_has("--x11-selftest")) { return run_x11_selftest(); }
     return run_x11();
 }
