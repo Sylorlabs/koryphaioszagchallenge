@@ -32,15 +32,15 @@ else
   sed -n '1,80p' /tmp/koryphaios-zag-build.log >&2
 fi
 
-if [[ -x build/koryphaios ]] && build/koryphaios --headless-test | rg -q 'native-headless: PASS'; then
-  record native-headless pass contract-keyboard-pointer-renderer
+if [[ -x build/koryphaios ]] && build/koryphaios --headless-test | rg -q 'session=create-reuse-force-rename-confirm-delete'; then
+  record native-headless pass contract-keyboard-pointer-session-lifecycle-renderer
 else
   record native-headless fail failed
 fi
 
 if "$znc" src/native/core_test.zag -o build/core_test --analyze-strict >/tmp/koryphaios-zag-core-build.log 2>&1 &&
    build/core_test | rg -q 'NATIVE CORE: ALL PASS'; then
-  record native-core pass persistence-recovery-provider-detection-errors
+  record native-core pass persistence-recovery-provider-detection-session-lifecycle-settings-errors
 else
   record native-core fail failed
   sed -n '1,80p' /tmp/koryphaios-zag-core-build.log >&2

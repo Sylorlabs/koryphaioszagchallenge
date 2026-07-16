@@ -32,12 +32,52 @@ fn main() i32 {
         core.*.active_session_id.len == 12 &&
         util_read_or_empty(_zag_str_concat(root, "/sessions.json")).len > 2, &failures);
 
+    let first_id: []u8 = _zag_strdup(core.*.active_session_id);
+    let reuse: AppCommand = core_command(AppCommandKind.session_new, "", "Should not duplicate");
+    check("new session reuses the active untouched composer by default",
+        core_dispatch(core, &reuse) && core.*.store.*.sessions.len == 1 &&
+        str_eq(core.*.active_session_id, first_id), &failures);
+
+    let force_new: AppCommand = core_forced_command(AppCommandKind.session_new, "", "Forced session");
+    check("force-new override creates a distinct untouched session",
+        core_dispatch(core, &force_new) && core.*.store.*.sessions.len == 2 &&
+        !str_eq(core.*.active_session_id, first_id), &failures);
+    let forced_id: []u8 = _zag_strdup(core.*.active_session_id);
+    let rename: AppCommand = core_command(AppCommandKind.session_rename, forced_id, "Renamed native session");
+    check("session rename writes through atomically",
+        core_dispatch(core, &rename) &&
+        str_eq(get[*Session](core.*.store.*.sessions, 1).*.title, "Renamed native session") &&
+        str_index_of(util_read_or_empty(_zag_str_concat(root, "/sessions.json")), "Renamed native session") >= 0, &failures);
+    let remove: AppCommand = core_command(AppCommandKind.session_delete, forced_id, "");
+    check("session delete removes messages and selects a surviving session",
+        core_dispatch(core, &remove) && core.*.store.*.sessions.len == 1 &&
+        str_eq(core.*.active_session_id, first_id) &&
+        util_read_or_empty(_zag_str_concat(_zag_str_concat(root, "/messages/"), _zag_str_concat(forced_id, ".json"))).len == 0,
+        &failures);
+
     let send: AppCommand = core_command(AppCommandKind.message_send, "", "hello from native Zag");
     check("message_send persists user content", core_dispatch(core, &send), &failures);
     let session: *Session = get[*Session](core.*.store.*.sessions, 0);
     let messages: []u8 = store_messages_raw(core.*.store, session.*.id);
     check("message count is exact and usage is not estimated", session.*.message_count == 1 &&
         messages.len > 20 && session.*.tokens_in == 0 && session.*.tokens_out == 0, &failures);
+
+    let always: AppCommand = core_command(AppCommandKind.setting_always_create_session, "", "true");
+    check("always-create preference persists as a real setting", core_dispatch(core, &always) &&
+        core.*.always_create_session &&
+        str_index_of(util_read_or_empty(_zag_str_concat(root, "/native-settings.json")), "true") >= 0, &failures);
+    let preference_first: AppCommand = core_command(AppCommandKind.session_new, "", "Preference one");
+    let preference_second: AppCommand = core_command(AppCommandKind.session_new, "", "Preference two");
+    let _p1: bool = core_dispatch(core, &preference_first);
+    let _p2: bool = core_dispatch(core, &preference_second);
+    check("always-create preference overrides untouched-session reuse",
+        core.*.store.*.sessions.len == 3, &failures);
+    let remove_p1: AppCommand = core_command(AppCommandKind.session_delete,
+        get[*Session](core.*.store.*.sessions, 1).*.id, "");
+    let _r1: bool = core_dispatch(core, &remove_p1);
+    let remove_p2: AppCommand = core_command(AppCommandKind.session_delete,
+        get[*Session](core.*.store.*.sessions, 1).*.id, "");
+    let _r2: bool = core_dispatch(core, &remove_p2);
 
     let bad_provider: AppCommand = core_command(AppCommandKind.provider_open, "", "google");
     check("unknown merged provider identity is rejected", !core_dispatch(core, &bad_provider) &&
@@ -46,7 +86,8 @@ fn main() i32 {
     let reopened: *AppCore = core_open(root);
     check("restart recovers persisted session state", reopened.*.ready &&
         reopened.*.store.*.sessions.len == 1 &&
-        get[*Session](reopened.*.store.*.sessions, 0).*.message_count == 1, &failures);
+        get[*Session](reopened.*.store.*.sessions, 0).*.message_count == 1 &&
+        reopened.*.always_create_session, &failures);
 
     let corrupt_root: []u8 = _zag_str_concat(root, "-corrupt");
     util_mkdir(corrupt_root);
@@ -55,6 +96,15 @@ fn main() i32 {
     check("corrupt schema fails closed with backup and stable code", !corrupt.*.ready &&
         str_eq(corrupt.*.error_code, "E_STORAGE_SCHEMA") &&
         util_read_or_empty(_zag_str_concat(corrupt_root, "/native-schema.corrupt.backup")).len > 0, &failures);
+
+    let settings_root: []u8 = _zag_str_concat(root, "-settings-corrupt");
+    util_mkdir(settings_root);
+    util_write_atomic(_zag_str_concat(settings_root, "/native-schema.json"), "{\"schemaVersion\":1,\"format\":\"koryphaios-native\"}");
+    util_write_atomic(_zag_str_concat(settings_root, "/native-settings.json"), "{bad");
+    let settings_corrupt: *AppCore = core_open(settings_root);
+    check("corrupt settings fail closed with backup and stable code", !settings_corrupt.*.ready &&
+        str_eq(settings_corrupt.*.error_code, "E_SETTINGS_SCHEMA") &&
+        util_read_or_empty(_zag_str_concat(settings_root, "/native-settings.corrupt.backup")).len > 0, &failures);
 
     if (failures == 0) { _zag_println("NATIVE CORE: ALL PASS"); return 0; }
     _zag_println("NATIVE CORE: FAILURES"); return 1;

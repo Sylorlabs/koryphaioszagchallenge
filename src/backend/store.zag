@@ -189,6 +189,16 @@ fn store_delete_session(st: *Store, id: []u8) bool {
     return true;
 }
 
+fn store_rename_session(st: *Store, id: []u8, title: []u8) bool {
+    if (title.len == 0 || title.len > 120) { return false; }
+    if (store_find(st, id)) |session| {
+        session.*.title = _zag_strdup(title);
+        store_touch(st, session);
+        return true;
+    }
+    return false;
+}
+
 fn store_touch(st: *Store, s: *Session) void {
     s.*.updated_at = util_now_ms();
     s.*.version = s.*.version + 1;

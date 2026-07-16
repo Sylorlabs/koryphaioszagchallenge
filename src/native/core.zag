@@ -19,6 +19,7 @@ struct AppCore {
     providers: ArrayList[*ProviderIdentity],
     events: ArrayList[*AppEvent],
     data_dir: []u8,
+    always_create_session: bool,
     ready: bool,
     error_code: []u8,
 }
@@ -111,6 +112,39 @@ fn core_schema_backup_path(core: *AppCore) []u8 {
     return _zag_str_concat(core.*.data_dir, "/native-schema.corrupt.backup");
 }
 
+fn core_settings_path(core: *AppCore) []u8 {
+    return _zag_str_concat(core.*.data_dir, "/native-settings.json");
+}
+
+fn core_settings_backup_path(core: *AppCore) []u8 {
+    return _zag_str_concat(core.*.data_dir, "/native-settings.corrupt.backup");
+}
+
+fn core_save_settings(core: *AppCore) bool {
+    let value: []u8 = "false";
+    if (core.*.always_create_session) { value = "true"; }
+    return util_write_atomic(core_settings_path(core),
+        _zag_str_concat("{\"schemaVersion\":1,\"alwaysCreateSession\":", _zag_str_concat(value, "}")));
+}
+
+fn core_load_settings(core: *AppCore) bool {
+    let path: []u8 = core_settings_path(core);
+    let raw: []u8 = util_read_or_empty(path);
+    if (raw.len == 0) {
+        core.*.always_create_session = false;
+        return core_save_settings(core);
+    }
+    let parsed: ?*JNode = json_parse(raw);
+    if (parsed) |node| {
+        if (json_int(json_get(node, "schemaVersion")) == 1) {
+            core.*.always_create_session = json_bool(json_get(node, "alwaysCreateSession"));
+            return true;
+        }
+    }
+    util_write_atomic(core_settings_backup_path(core), raw);
+    return false;
+}
+
 fn core_check_schema(core: *AppCore) bool {
     let path: []u8 = core_schema_path(core);
     let raw: []u8 = util_read_or_empty(path);
@@ -135,6 +169,7 @@ fn core_open(data_dir: []u8) *AppCore {
         .providers = make[*ProviderIdentity](16),
         .events = make[*AppEvent](16),
         .data_dir = _zag_strdup(data_dir),
+        .always_create_session = false,
         .ready = false,
         .error_code = "",
     });
@@ -142,6 +177,11 @@ fn core_open(data_dir: []u8) *AppCore {
     if (!core_check_schema(core)) {
         core.*.error_code = "E_STORAGE_SCHEMA";
         core_event(core, AppEventKind.recovery_required, "", "Native schema is invalid; the original was backed up.", core.*.error_code);
+        return core;
+    }
+    if (!core_load_settings(core)) {
+        core.*.error_code = "E_SETTINGS_SCHEMA";
+        core_event(core, AppEventKind.recovery_required, "", "Native settings are invalid; the original was backed up.", core.*.error_code);
         return core;
     }
     if (core.*.store.*.sessions.len > 0) {
@@ -172,6 +212,14 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
         return core_reject(core, cmd, "E_STARTUP_NOT_READY", "The application core is not ready.");
     }
     if (cmd.*.kind == AppCommandKind.session_new) {
+        if (!cmd.*.force && !core.*.always_create_session && core.*.active_session_id.len > 0) {
+            if (store_find(core.*.store, core.*.active_session_id)) |active| {
+                if (active.*.message_count == 0) {
+                    core_event(core, AppEventKind.session_changed, active.*.id, "reused untouched session", "");
+                    return true;
+                }
+            }
+        }
         let title: []u8 = cmd.*.payload;
         if (title.len == 0) { title = "New Session"; }
         let session: *Session = store_create_session(core.*.store, title, "");
@@ -186,6 +234,32 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
             return true;
         }
         return core_reject(core, cmd, "E_SESSION_NOT_FOUND", "The selected session does not exist.");
+    }
+    if (cmd.*.kind == AppCommandKind.session_rename) {
+        if (cmd.*.payload.len == 0) {
+            return core_reject(core, cmd, "E_SESSION_TITLE_EMPTY", "A session title is required.");
+        }
+        if (cmd.*.payload.len > 120) {
+            return core_reject(core, cmd, "E_SESSION_TITLE_LONG", "Session titles are limited to 120 bytes.");
+        }
+        if (!store_rename_session(core.*.store, cmd.*.session_id, cmd.*.payload)) {
+            return core_reject(core, cmd, "E_SESSION_NOT_FOUND", "The session to rename does not exist.");
+        }
+        core_event(core, AppEventKind.session_changed, cmd.*.session_id, "renamed", "");
+        return true;
+    }
+    if (cmd.*.kind == AppCommandKind.session_delete) {
+        if (!store_delete_session(core.*.store, cmd.*.session_id)) {
+            return core_reject(core, cmd, "E_SESSION_NOT_FOUND", "The session to delete does not exist.");
+        }
+        if (str_eq(core.*.active_session_id, cmd.*.session_id)) {
+            core.*.active_session_id = "";
+            if (core.*.store.*.sessions.len > 0) {
+                core.*.active_session_id = get[*Session](core.*.store.*.sessions, 0).*.id;
+            }
+        }
+        core_event(core, AppEventKind.session_deleted, core.*.active_session_id, cmd.*.session_id, "");
+        return true;
     }
     if (cmd.*.kind == AppCommandKind.message_send) {
         if (cmd.*.payload.len == 0) {
@@ -217,8 +291,21 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
         let _found: i32 = core_refresh_providers(core, _zag_getenv("PATH"));
         return true;
     }
+    if (cmd.*.kind == AppCommandKind.setting_always_create_session) {
+        if (!str_eq(cmd.*.payload, "true") && !str_eq(cmd.*.payload, "false")) {
+            return core_reject(core, cmd, "E_SETTING_VALUE", "The setting value must be true or false.");
+        }
+        let previous: bool = core.*.always_create_session;
+        core.*.always_create_session = str_eq(cmd.*.payload, "true");
+        if (!core_save_settings(core)) {
+            core.*.always_create_session = previous;
+            return core_reject(core, cmd, "E_SETTINGS_WRITE", "The session preference could not be saved.");
+        }
+        core_event(core, AppEventKind.setting_changed, "", cmd.*.payload, "");
+        return true;
+    }
     if (cmd.*.kind == AppCommandKind.recovery_retry) {
-        if (core_check_schema(core)) {
+        if (core_check_schema(core) && core_load_settings(core)) {
             core.*.ready = true;
             core.*.error_code = "";
             core_event(core, AppEventKind.startup_ready, core.*.active_session_id, "recovery succeeded", "");
@@ -230,5 +317,9 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
 }
 
 fn core_command(kind: AppCommandKind, sid: []u8, payload: []u8) AppCommand {
-    return AppCommand{ .kind = kind, .session_id = sid, .payload = payload };
+    return AppCommand{ .kind = kind, .session_id = sid, .payload = payload, .force = false };
+}
+
+fn core_forced_command(kind: AppCommandKind, sid: []u8, payload: []u8) AppCommand {
+    return AppCommand{ .kind = kind, .session_id = sid, .payload = payload, .force = true };
 }

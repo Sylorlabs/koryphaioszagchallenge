@@ -7,10 +7,12 @@ listener and supports --project, --headless-test, --x11-selftest, --capture,
 --safe-mode, --diagnostics, and --version.
 
 Implemented evidence now covers typed in-process commands/events, native session
-creation and selection, user-message persistence, restart recovery, schema
-corruption backup, stable error codes, distinct provider identities, keyboard
-and pointer paths, deterministic captures at four size/scale combinations, and
-a live X11 connect/render/present/pump/close test. Provider refresh performs
+creation, untouched-session reuse, force-new, rename, confirmed deletion and
+selection, persisted session policy, user-message persistence, restart recovery,
+schema/settings corruption backup, stable error codes, distinct provider
+identities, keyboard and pointer paths, deterministic captures at four
+size/scale combinations, and a live X11 connect/render/present/pump/close test.
+Provider refresh performs
 pure-Zag executable PATH checks for Jules, Gemini CLI, Codex, Claude Code,
 Cursor Agent, and Cline without invoking project-local impostors.
 
@@ -20,7 +22,7 @@ their substituted generic struct layouts before type normalization. Native
 container access uses the normal list.get API again; the local compiler digest
 and relevant source digest are pinned in TOOLCHAIN.lock.
 
-The release remains blocked on complete in-process service migration,
+The release remains blocked on regeneration and provider replies, complete in-process service migration,
 Secret-Service/vault storage, X.509 chain validation, provider execution, full
 native workflows, AT-SPI, legacy-data migration fixtures, packaging, and
 performance evidence. The release verifier fails closed for those unresolved

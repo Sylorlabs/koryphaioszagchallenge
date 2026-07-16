@@ -12,6 +12,8 @@ struct NativeUi {
     composer_focused: bool,
     palette_open: bool,
     settings_open: bool,
+    rename_mode: bool,
+    delete_confirm_sid: []u8,
     safe_mode: bool,
     last_btn: i32,
     last_error: []u8,
@@ -56,6 +58,8 @@ fn ui_new(core: *AppCore, safe_mode: bool) *NativeUi {
         .composer_focused = true,
         .palette_open = false,
         .settings_open = false,
+        .rename_mode = false,
+        .delete_confirm_sid = "",
         .safe_mode = safe_mode,
         .last_btn = 0,
         .last_error = "",
@@ -83,8 +87,44 @@ fn ui_command(ui: *NativeUi, cmd: AppCommand) bool {
     return ok;
 }
 
-fn ui_new_session(ui: *NativeUi) void {
+fn ui_new_session(ui: *NativeUi, force: bool) void {
     let cmd: AppCommand = core_command(AppCommandKind.session_new, "", "New Session");
+    if (force) { cmd = core_forced_command(AppCommandKind.session_new, "", "New Session"); }
+    let _ok: bool = ui_command(ui, cmd);
+}
+
+fn ui_begin_rename(ui: *NativeUi, session: *Session) void {
+    ui.*.core.*.active_session_id = session.*.id;
+    ui.*.composer = _zag_strdup(session.*.title);
+    ui.*.rename_mode = true;
+    ui.*.composer_focused = true;
+}
+
+fn ui_commit_rename(ui: *NativeUi) void {
+    let cmd: AppCommand = core_command(AppCommandKind.session_rename,
+        ui.*.core.*.active_session_id, ui.*.composer);
+    if (ui_command(ui, cmd)) {
+        ui.*.composer = "";
+        ui.*.rename_mode = false;
+    }
+}
+
+fn ui_delete_session(ui: *NativeUi, sid: []u8) void {
+    let cmd: AppCommand = core_command(AppCommandKind.session_delete, sid, "");
+    let _ok: bool = ui_command(ui, cmd);
+    ui.*.rename_mode = false;
+    ui.*.composer = "";
+    ui.*.delete_confirm_sid = "";
+}
+
+fn ui_request_delete(ui: *NativeUi, sid: []u8) void {
+    ui.*.delete_confirm_sid = _zag_strdup(sid);
+}
+
+fn ui_toggle_always_create(ui: *NativeUi) void {
+    let value: []u8 = "true";
+    if (ui.*.core.*.always_create_session) { value = "false"; }
+    let cmd: AppCommand = core_command(AppCommandKind.setting_always_create_session, "", value);
     let _ok: bool = ui_command(ui, cmd);
 }
 
@@ -100,21 +140,40 @@ fn ui_refresh_providers(ui: *NativeUi) void {
 
 fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
     let ctrl: bool = (mods & 2) != 0;
-    if (ctrl && code == 'n') { ui_new_session(ui); return; }
+    let shift: bool = (mods & 1) != 0;
+    if (ui.*.delete_confirm_sid.len > 0) {
+        if (code == 27) { ui.*.delete_confirm_sid = ""; }
+        else if (code == 13) { ui_delete_session(ui, ui.*.delete_confirm_sid); }
+        return;
+    }
+    if (ctrl && code == 'n') { ui_new_session(ui, shift); return; }
     if (ctrl && code == 'k') { ui.*.palette_open = !ui.*.palette_open; return; }
+    if (ctrl && code == 127 && ui.*.core.*.active_session_id.len > 0) {
+        ui_request_delete(ui, ui.*.core.*.active_session_id);
+        return;
+    }
     if (ctrl && code == ',') {
         ui.*.settings_open = !ui.*.settings_open;
         if (ui.*.settings_open) { ui_refresh_providers(ui); }
         return;
     }
     if (code == 27) {
+        if (ui.*.rename_mode) { ui.*.rename_mode = false; ui.*.composer = ""; }
         ui.*.palette_open = false;
         ui.*.settings_open = false;
         return;
     }
+    if (code == 291 && ui.*.core.*.active_session_id.len > 0) {
+        if (store_find(ui.*.core.*.store, ui.*.core.*.active_session_id)) |session| { ui_begin_rename(ui, session); }
+        return;
+    }
+    if (ui.*.settings_open && code == 'a') { ui_toggle_always_create(ui); return; }
     if (code == 9) { ui.*.composer_focused = !ui.*.composer_focused; return; }
     if (ui.*.palette_open || ui.*.settings_open || !ui.*.composer_focused) { return; }
-    if (code == 13) { ui_send(ui); return; }
+    if (code == 13) {
+        if (ui.*.rename_mode) { ui_commit_rename(ui); } else { ui_send(ui); }
+        return;
+    }
     if (code == 8) {
         if (ui.*.composer.len > 0) { ui.*.composer = ui.*.composer[0..ui.*.composer.len - 1]; }
         return;
@@ -128,16 +187,33 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
     let pressed: bool = (btn & 1) != 0 && (ui.*.last_btn & 1) == 0;
     ui.*.last_btn = btn;
     if (!pressed) { return; }
+    if (ui.*.delete_confirm_sid.len > 0) {
+        if (mx >= w / 2 + 10 && mx < w / 2 + 126 && my >= h / 2 + 24 && my < h / 2 + 56) {
+            ui_delete_session(ui, ui.*.delete_confirm_sid);
+        } else if (mx >= w / 2 - 126 && mx < w / 2 - 10 && my >= h / 2 + 24 && my < h / 2 + 56) {
+            ui.*.delete_confirm_sid = "";
+        }
+        return;
+    }
+    if (ui.*.settings_open) {
+        if (mx >= 292 && mx < 620 && my >= 128 && my < 158) { ui_toggle_always_create(ui); }
+        return;
+    }
+    if (ui.*.palette_open) { return; }
     if (mx >= 14 && mx < 234 && my >= 80 && my < 108) {
-        ui_new_session(ui);
+        ui_new_session(ui, false);
         return;
     }
     if (mx >= 14 && mx < 234 && my >= 116 && my < h - 48) {
         let idx: i32 = (my - 116) / 36;
         if (idx >= 0 && idx < ui.*.core.*.store.*.sessions.len) {
             let session: *Session = list.get[*Session](ui.*.core.*.store.*.sessions, idx);
-            let cmd: AppCommand = core_command(AppCommandKind.session_select, session.*.id, "");
-            let _ok: bool = ui_command(ui, cmd);
+            if (mx >= 204) { ui_request_delete(ui, session.*.id); }
+            else if (mx >= 174) { ui_begin_rename(ui, session); }
+            else {
+                let cmd: AppCommand = core_command(AppCommandKind.session_select, session.*.id, "");
+                let _ok: bool = ui_command(ui, cmd);
+            }
         }
         return;
     }
@@ -165,8 +241,10 @@ fn draw_sessions(f: *FB, ui: *NativeUi, h: i32) void {
     let i: i32 = 0;
     while (i < ui.*.core.*.store.*.sessions.len && 116 + i * 36 < h - 48) {
         let session: *Session = list.get[*Session](ui.*.core.*.store.*.sessions, i);
-        draw_button(f, 14, 116 + i * 36, 220, session.*.title,
+        draw_button(f, 14, 116 + i * 36, 160, session.*.title,
             str_eq(session.*.id, ui.*.core.*.active_session_id));
+        draw_button(f, 174, 116 + i * 36, 30, "R", false);
+        draw_button(f, 204, 116 + i * 36, 30, "X", false);
         i = i + 1;
     }
 }
@@ -185,10 +263,13 @@ fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     while (i < ui.*.core.*.events.len && y < h - 150) {
         let event: *AppEvent = list.get[*AppEvent](ui.*.core.*.events, i);
         let prefix: []u8 = "event";
+        let detail: []u8 = event.*.payload;
         if (event.*.kind == AppEventKind.message_added) { prefix = "you"; }
         if (event.*.kind == AppEventKind.command_rejected) { prefix = "error"; }
         if (event.*.kind == AppEventKind.session_changed) { prefix = "session"; }
-        draw_text(f, 290, y, _zag_str_concat(prefix, _zag_str_concat(": ", event.*.payload)), rgb(204, 192, 175));
+        if (event.*.kind == AppEventKind.session_deleted) { prefix = "deleted"; detail = "session removed"; }
+        if (event.*.kind == AppEventKind.setting_changed) { prefix = "setting"; }
+        draw_text(f, 290, y, _zag_str_concat(prefix, _zag_str_concat(": ", detail)), rgb(204, 192, 175));
         y = y + 28;
         i = i + 1;
     }
@@ -197,26 +278,38 @@ fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     if (ui.*.composer_focused) { composer_border = rgb(213, 178, 97); }
     round_rect_outline(f, 290, h - 104, w - 330, 44, 6, composer_border);
     let prompt: []u8 = ui.*.composer;
-    if (prompt.len == 0) { prompt = "Message Koryphaios"; }
+    if (prompt.len == 0) {
+        if (ui.*.rename_mode) { prompt = "Enter a session title"; }
+        else { prompt = "Message Koryphaios"; }
+    }
     draw_text_max(f, 304, h - 84, prompt, rgb(204, 192, 175), w - 380);
     if (ui.*.last_error.len > 0) {
         draw_text_max(f, 290, h - 44, ui.*.last_error, rgb(235, 130, 110), w - 330);
     } else {
-        draw_text(f, 290, h - 44, "Enter sends  |  exact usage appears only when provider-reported", rgb(139, 129, 116));
+        if (ui.*.rename_mode) {
+            draw_text(f, 290, h - 44, "Rename mode: Enter saves, Escape cancels", rgb(213, 178, 97));
+        } else {
+            draw_text(f, 290, h - 44, "Enter sends  |  exact usage appears only when provider-reported", rgb(139, 129, 116));
+        }
     }
 }
 
 fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     fill_rect(f, 270, 58, w - 310, h - 106, rgb(28, 25, 23));
     round_rect_outline(f, 270, 58, w - 310, h - 106, 8, rgb(110, 92, 57));
-    draw_text_scaled(f, 292, 82, "Providers", rgb(239, 230, 215), 2);
-    draw_text(f, 292, 116, "Distinct identities; CLI availability comes from executable PATH checks.", rgb(183, 172, 155));
+    draw_text_scaled(f, 292, 82, "Settings", rgb(239, 230, 215), 2);
+    draw_text(f, 292, 116, "SESSION BEHAVIOR", rgb(183, 172, 155));
+    let reuse_label: []u8 = "Reuse untouched session: ON";
+    if (ui.*.core.*.always_create_session) { reuse_label = "Always create new session: ON"; }
+    draw_button(f, 292, 128, 328, reuse_label, ui.*.core.*.always_create_session);
+    draw_text_scaled(f, 292, 182, "Providers", rgb(239, 230, 215), 2);
+    draw_text(f, 292, 216, "Distinct identities; CLI availability comes from executable PATH checks.", rgb(183, 172, 155));
     let i: i32 = 0;
-    while (i < ui.*.core.*.providers.len && 148 + i * 25 < h - 68) {
+    while (i < ui.*.core.*.providers.len && 248 + i * 25 < h - 68) {
         let provider: *ProviderIdentity = list.get[*ProviderIdentity](ui.*.core.*.providers, i);
         let state: []u8 = "unavailable";
         if (provider.*.available) { state = "available"; }
-        draw_text(f, 292, 148 + i * 25,
+        draw_text(f, 292, 248 + i * 25,
             _zag_str_concat(provider.*.name_, _zag_str_concat("  [", _zag_str_concat(provider.*.transport, _zag_str_concat("]  ", state)))),
             rgb(204, 192, 175));
         i = i + 1;
@@ -228,7 +321,16 @@ fn draw_palette(f: *FB, w: i32) void {
     round_rect_outline(f, w / 2 - 260, 92, 520, 130, 8, rgb(213, 178, 97));
     draw_text_scaled(f, w / 2 - 238, 116, "Command palette", rgb(239, 230, 215), 2);
     draw_text(f, w / 2 - 238, 158, "Ctrl+N  New session", rgb(204, 192, 175));
-    draw_text(f, w / 2 - 238, 184, "Ctrl+,  Provider settings", rgb(204, 192, 175));
+    draw_text(f, w / 2 - 238, 184, "Ctrl+Shift+N force new  |  F2 rename  |  Ctrl+Del delete", rgb(204, 192, 175));
+}
+
+fn draw_delete_confirmation(f: *FB, w: i32, h: i32) void {
+    fill_rect(f, w / 2 - 190, h / 2 - 72, 380, 144, rgb(28, 25, 23));
+    round_rect_outline(f, w / 2 - 190, h / 2 - 72, 380, 144, 8, rgb(190, 91, 73));
+    draw_text_scaled(f, w / 2 - 166, h / 2 - 44, "Delete session?", rgb(239, 230, 215), 2);
+    draw_text(f, w / 2 - 166, h / 2 - 8, "Messages will be removed from local storage.", rgb(204, 192, 175));
+    draw_button(f, w / 2 - 126, h / 2 + 24, 116, "Cancel", false);
+    draw_button(f, w / 2 + 10, h / 2 + 24, 116, "Delete", true);
 }
 
 fn render(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
@@ -251,6 +353,7 @@ fn render(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     draw_feed(f, ui, w, h);
     if (ui.*.settings_open) { draw_settings(f, ui, w, h); }
     if (ui.*.palette_open) { draw_palette(f, w); }
+    if (ui.*.delete_confirm_sid.len > 0) { draw_delete_confirmation(f, w, h); }
 }
 
 fn run_headless() i32 {
@@ -268,17 +371,41 @@ fn run_headless() i32 {
     let settings_works: bool = ui.*.settings_open &&
         ui_last_event(ui) != null &&
         list.get[*AppEvent](ui.*.core.*.events, ui.*.core.*.events.len - 1).*.kind == AppEventKind.provider_changed;
+    ui_key(ui, 'a', 0);
+    let setting_works: bool = core.*.always_create_session;
+    ui_key(ui, 'a', 0);
     ui_key(ui, 27, 0);
     if (!core.*.ready || core.*.store.*.sessions.len != 1 ||
-        list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 1 || !palette_works || !settings_works) {
+        list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 1 || !palette_works || !settings_works || !setting_works) {
         _zag_eprintln("native-headless: FAIL workflow");
         return 1;
     }
-    // Pointer activation of New Session must create and select a second session.
+    // Pointer activation reuses an untouched session by default; force-new is
+    // explicit and keyboard reachable.
     ui_pointer(ui, 20, 90, 1, 1024, 640);
     ui_pointer(ui, 20, 90, 0, 1024, 640);
+    ui_pointer(ui, 20, 90, 1, 1024, 640);
+    ui_pointer(ui, 20, 90, 0, 1024, 640);
+    ui_key(ui, 'n', 3);
+    if (core.*.store.*.sessions.len != 3) {
+        _zag_eprintln("native-headless: FAIL reuse-force-new");
+        return 1;
+    }
+    ui_key(ui, 291, 0);
+    ui.*.composer = "Renamed via keyboard";
+    ui_key(ui, 13, 0);
+    if (!str_eq(list.get[*Session](core.*.store.*.sessions, 2).*.title, "Renamed via keyboard")) {
+        _zag_eprintln("native-headless: FAIL rename-keyboard");
+        return 1;
+    }
+    ui_key(ui, 127, 2);
+    if (ui.*.delete_confirm_sid.len == 0 || core.*.store.*.sessions.len != 3) {
+        _zag_eprintln("native-headless: FAIL delete-confirmation");
+        return 1;
+    }
+    ui_key(ui, 13, 0);
     if (core.*.store.*.sessions.len != 2) {
-        _zag_eprintln("native-headless: FAIL pointer");
+        _zag_eprintln("native-headless: FAIL delete-keyboard");
         return 1;
     }
     let width: i32 = arg_i_after("--width", 1024);
@@ -304,7 +431,7 @@ fn run_headless() i32 {
             fb_write_bmp(&physical, path);
         }
     }
-    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create message=persist renderer=framebuffer");
+    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=persist settings=persist renderer=framebuffer");
     return 0;
 }
 
