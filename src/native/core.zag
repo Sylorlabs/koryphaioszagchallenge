@@ -1,0 +1,181 @@
+// In-process application core. UI code submits AppCommand values and consumes
+// AppEvent values; no UI action crosses an HTTP or WebSocket boundary.
+
+@import("contract.zag")
+@import("../backend/store.zag")
+
+struct ProviderIdentity {
+    id: []u8,
+    name_: []u8,
+    transport: []u8,
+    available: bool,
+}
+
+struct AppCore {
+    store: *Store,
+    active_session_id: []u8,
+    providers: ArrayList[*ProviderIdentity],
+    events: ArrayList[*AppEvent],
+    data_dir: []u8,
+    ready: bool,
+    error_code: []u8,
+}
+
+fn core_event(core: *AppCore, kind: AppEventKind, sid: []u8, payload: []u8, code: []u8) void {
+    push[*AppEvent](&core.*.events, new(AppEvent{
+        .kind = kind,
+        .session_id = _zag_strdup(sid),
+        .payload = _zag_strdup(payload),
+        .code = code,
+    }));
+}
+
+fn core_add_provider(core: *AppCore, id: []u8, name_: []u8, transport: []u8) void {
+    push[*ProviderIdentity](&core.*.providers, new(ProviderIdentity{
+        .id = id,
+        .name_ = name_,
+        .transport = transport,
+        .available = false,
+    }));
+}
+
+fn core_provider_catalog(core: *AppCore) void {
+    core_add_provider(core, "google-ai-studio", "Google AI Studio", "api");
+    core_add_provider(core, "google-api", "Google API", "api");
+    core_add_provider(core, "vertex-ai", "Vertex AI", "api");
+    core_add_provider(core, "jules", "Jules", "cli");
+    core_add_provider(core, "gemini-cli", "Gemini CLI", "cli");
+    core_add_provider(core, "codex", "Codex", "cli");
+    core_add_provider(core, "claude-code", "Claude Code", "cli");
+    core_add_provider(core, "cursor", "Cursor", "cli");
+    core_add_provider(core, "cline", "Cline", "cli");
+    core_add_provider(core, "openai", "OpenAI", "api");
+    core_add_provider(core, "anthropic", "Anthropic", "api");
+    core_add_provider(core, "ollama", "Ollama", "local");
+}
+
+fn core_schema_path(core: *AppCore) []u8 {
+    return _zag_str_concat(core.*.data_dir, "/native-schema.json");
+}
+
+fn core_schema_backup_path(core: *AppCore) []u8 {
+    return _zag_str_concat(core.*.data_dir, "/native-schema.corrupt.backup");
+}
+
+fn core_check_schema(core: *AppCore) bool {
+    let path: []u8 = core_schema_path(core);
+    let raw: []u8 = util_read_or_empty(path);
+    if (raw.len == 0) {
+        return util_write_atomic(path, "{\"schemaVersion\":1,\"format\":\"koryphaios-native\"}");
+    }
+    let parsed: ?*JNode = json_parse(raw);
+    if (parsed) |node| {
+        if (json_int(json_get(node, "schemaVersion")) == 1 &&
+            str_eq(json_str(json_get(node, "format")), "koryphaios-native")) {
+            return true;
+        }
+    }
+    util_write_atomic(core_schema_backup_path(core), raw);
+    return false;
+}
+
+fn core_open(data_dir: []u8) *AppCore {
+    let core: *AppCore = new(AppCore{
+        .store = store_open(data_dir),
+        .active_session_id = "",
+        .providers = make[*ProviderIdentity](16),
+        .events = make[*AppEvent](16),
+        .data_dir = _zag_strdup(data_dir),
+        .ready = false,
+        .error_code = "",
+    });
+    core_provider_catalog(core);
+    if (!core_check_schema(core)) {
+        core.*.error_code = "E_STORAGE_SCHEMA";
+        core_event(core, AppEventKind.recovery_required, "", "Native schema is invalid; the original was backed up.", core.*.error_code);
+        return core;
+    }
+    if (core.*.store.*.sessions.len > 0) {
+        core.*.active_session_id = get[*Session](core.*.store.*.sessions, 0).*.id;
+    }
+    core.*.ready = true;
+    core_event(core, AppEventKind.startup_ready, core.*.active_session_id, "storage, catalog, project, and UI resources ready", "");
+    return core;
+}
+
+fn core_find_provider(core: *AppCore, id: []u8) ?*ProviderIdentity {
+    let i: i32 = 0;
+    while (i < core.*.providers.len) {
+        let p: *ProviderIdentity = get[*ProviderIdentity](core.*.providers, i);
+        if (str_eq(p.*.id, id)) { return p; }
+        i = i + 1;
+    }
+    return null;
+}
+
+fn core_reject(core: *AppCore, cmd: *AppCommand, code: []u8, message: []u8) bool {
+    core_event(core, AppEventKind.command_rejected, cmd.*.session_id, message, code);
+    return false;
+}
+
+fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
+    if (!core.*.ready && cmd.*.kind != AppCommandKind.recovery_retry) {
+        return core_reject(core, cmd, "E_STARTUP_NOT_READY", "The application core is not ready.");
+    }
+    if (cmd.*.kind == AppCommandKind.session_new) {
+        let title: []u8 = cmd.*.payload;
+        if (title.len == 0) { title = "New Session"; }
+        let session: *Session = store_create_session(core.*.store, title, "");
+        core.*.active_session_id = session.*.id;
+        core_event(core, AppEventKind.session_changed, session.*.id, "created", "");
+        return true;
+    }
+    if (cmd.*.kind == AppCommandKind.session_select) {
+        if (store_find(core.*.store, cmd.*.session_id)) |session| {
+            core.*.active_session_id = session.*.id;
+            core_event(core, AppEventKind.session_changed, session.*.id, "selected", "");
+            return true;
+        }
+        return core_reject(core, cmd, "E_SESSION_NOT_FOUND", "The selected session does not exist.");
+    }
+    if (cmd.*.kind == AppCommandKind.message_send) {
+        if (cmd.*.payload.len == 0) {
+            return core_reject(core, cmd, "E_MESSAGE_EMPTY", "A message is required.");
+        }
+        if (core.*.active_session_id.len == 0) {
+            return core_reject(core, cmd, "E_SESSION_REQUIRED", "Create or select a session first.");
+        }
+        if (store_find(core.*.store, core.*.active_session_id)) |session| {
+            let now: i64 = util_now_ms();
+            let mid: []u8 = util_nanoid(12);
+            let serialized: []u8 = message_json(mid, session.*.id, "user", cmd.*.payload, "", "", 0, 0, 0, now);
+            store_append_message(core.*.store, session.*.id, serialized);
+            session.*.message_count = session.*.message_count + 1;
+            store_touch(core.*.store, session);
+            core_event(core, AppEventKind.message_added, session.*.id, cmd.*.payload, "");
+            return true;
+        }
+        return core_reject(core, cmd, "E_SESSION_NOT_FOUND", "The active session no longer exists.");
+    }
+    if (cmd.*.kind == AppCommandKind.provider_open) {
+        if (core_find_provider(core, cmd.*.payload)) |provider| {
+            core_event(core, AppEventKind.provider_changed, "", provider.*.id, "");
+            return true;
+        }
+        return core_reject(core, cmd, "E_PROVIDER_UNKNOWN", "The provider identity is not in the verified catalog.");
+    }
+    if (cmd.*.kind == AppCommandKind.recovery_retry) {
+        if (core_check_schema(core)) {
+            core.*.ready = true;
+            core.*.error_code = "";
+            core_event(core, AppEventKind.startup_ready, core.*.active_session_id, "recovery succeeded", "");
+            return true;
+        }
+        return core_reject(core, cmd, "E_STORAGE_SCHEMA", "Recovery could not validate the schema.");
+    }
+    return core_reject(core, cmd, "E_COMMAND_UNSUPPORTED", "This command is not implemented.");
+}
+
+fn core_command(kind: AppCommandKind, sid: []u8, payload: []u8) AppCommand {
+    return AppCommand{ .kind = kind, .session_id = sid, .payload = payload };
+}

@@ -1,0 +1,52 @@
+@import("core.zag")
+
+fn check(name_: []u8, ok: bool, failures: *i32) void {
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failures.* = failures.* + 1; }
+    _zag_println(name_);
+}
+
+fn main() i32 {
+    let failures: i32 = 0;
+    let root: []u8 = _zag_str_concat("/tmp/koryphaios-core-", _zag_i64_to_str(util_getpid()));
+    let core: *AppCore = core_open(root);
+    check("startup reaches ready only after schema and provider catalog", core.*.ready, &failures);
+    check("provider identities remain distinct", core.*.providers.len == 12 &&
+        core_find_provider(core, "google-ai-studio") != null &&
+        core_find_provider(core, "google-api") != null &&
+        core_find_provider(core, "vertex-ai") != null &&
+        core_find_provider(core, "jules") != null &&
+        core_find_provider(core, "gemini-cli") != null, &failures);
+
+    let make_session: AppCommand = core_command(AppCommandKind.session_new, "", "Native workflow");
+    check("session_new command succeeds", core_dispatch(core, &make_session), &failures);
+    check("session is selected and persisted", core.*.store.*.sessions.len == 1 &&
+        core.*.active_session_id.len == 12 &&
+        util_read_or_empty(_zag_str_concat(root, "/sessions.json")).len > 2, &failures);
+
+    let send: AppCommand = core_command(AppCommandKind.message_send, "", "hello from native Zag");
+    check("message_send persists user content", core_dispatch(core, &send), &failures);
+    let session: *Session = get[*Session](core.*.store.*.sessions, 0);
+    let messages: []u8 = store_messages_raw(core.*.store, session.*.id);
+    check("message count is exact and usage is not estimated", session.*.message_count == 1 &&
+        messages.len > 20 && session.*.tokens_in == 0 && session.*.tokens_out == 0, &failures);
+
+    let bad_provider: AppCommand = core_command(AppCommandKind.provider_open, "", "google");
+    check("unknown merged provider identity is rejected", !core_dispatch(core, &bad_provider) &&
+        get[*AppEvent](core.*.events, core.*.events.len - 1).*.kind == AppEventKind.command_rejected, &failures);
+
+    let reopened: *AppCore = core_open(root);
+    check("restart recovers persisted session state", reopened.*.ready &&
+        reopened.*.store.*.sessions.len == 1 &&
+        get[*Session](reopened.*.store.*.sessions, 0).*.message_count == 1, &failures);
+
+    let corrupt_root: []u8 = _zag_str_concat(root, "-corrupt");
+    util_mkdir(corrupt_root);
+    util_write_atomic(_zag_str_concat(corrupt_root, "/native-schema.json"), "{bad");
+    let corrupt: *AppCore = core_open(corrupt_root);
+    check("corrupt schema fails closed with backup and stable code", !corrupt.*.ready &&
+        str_eq(corrupt.*.error_code, "E_STORAGE_SCHEMA") &&
+        util_read_or_empty(_zag_str_concat(corrupt_root, "/native-schema.corrupt.backup")).len > 0, &failures);
+
+    if (failures == 0) { _zag_println("NATIVE CORE: ALL PASS"); return 0; }
+    _zag_println("NATIVE CORE: FAILURES"); return 1;
+}

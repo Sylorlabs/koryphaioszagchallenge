@@ -3,7 +3,18 @@
 
 @import("fb.zag")
 @import("x11.zag")
-@import("contract.zag")
+@import("core.zag")
+
+struct NativeUi {
+    core: *AppCore,
+    composer: []u8,
+    composer_focused: bool,
+    palette_open: bool,
+    settings_open: bool,
+    safe_mode: bool,
+    last_btn: i32,
+    last_error: []u8,
+}
 
 fn arg_has(want: []u8) bool {
     let i: i32 = 1;
@@ -23,66 +34,297 @@ fn arg_after(want: []u8, fallback: []u8) []u8 {
     return fallback;
 }
 
+fn arg_i_after(want: []u8, fallback: i32) i32 {
+    let raw: []u8 = arg_after(want, "");
+    if (raw.len == 0) { return fallback; }
+    return _zag_str_to_i64(raw) as i32;
+}
+
+fn data_dir_from_args() []u8 {
+    let project: []u8 = arg_after("--project", "");
+    if (project.len > 0) { return _zag_str_concat(project, "/.koryphaios"); }
+    let configured: []u8 = _zag_getenv("KORYPHAIOS_DATA_DIR");
+    if (configured.len > 0) { return configured; }
+    return "data";
+}
+
+fn ui_new(core: *AppCore, safe_mode: bool) *NativeUi {
+    return new(NativeUi{
+        .core = core,
+        .composer = "",
+        .composer_focused = true,
+        .palette_open = false,
+        .settings_open = false,
+        .safe_mode = safe_mode,
+        .last_btn = 0,
+        .last_error = "",
+    });
+}
+
+fn one_char(code: i32) []u8 {
+    let raw: *i8 = _zag_malloc(1);
+    raw[0] = code as i8;
+    return raw[0..1];
+}
+
+fn ui_last_event(ui: *NativeUi) ?*AppEvent {
+    if (ui.*.core.*.events.len == 0) { return null; }
+    return ui.*.core.*.events.data[ui.*.core.*.events.len - 1];
+}
+
+fn ui_command(ui: *NativeUi, cmd: AppCommand) bool {
+    let ok: bool = core_dispatch(ui.*.core, &cmd);
+    if (!ok) {
+        if (ui_last_event(ui)) |event| { ui.*.last_error = event.*.payload; }
+    } else {
+        ui.*.last_error = "";
+    }
+    return ok;
+}
+
+fn ui_new_session(ui: *NativeUi) void {
+    let cmd: AppCommand = core_command(AppCommandKind.session_new, "", "New Session");
+    let _ok: bool = ui_command(ui, cmd);
+}
+
+fn ui_send(ui: *NativeUi) void {
+    let cmd: AppCommand = core_command(AppCommandKind.message_send, "", ui.*.composer);
+    if (ui_command(ui, cmd)) { ui.*.composer = ""; }
+}
+
+fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
+    let ctrl: bool = (mods & 2) != 0;
+    if (ctrl && code == 'n') { ui_new_session(ui); return; }
+    if (ctrl && code == 'k') { ui.*.palette_open = !ui.*.palette_open; return; }
+    if (ctrl && code == ',') { ui.*.settings_open = !ui.*.settings_open; return; }
+    if (code == 27) {
+        ui.*.palette_open = false;
+        ui.*.settings_open = false;
+        return;
+    }
+    if (code == 9) { ui.*.composer_focused = !ui.*.composer_focused; return; }
+    if (ui.*.palette_open || ui.*.settings_open || !ui.*.composer_focused) { return; }
+    if (code == 13) { ui_send(ui); return; }
+    if (code == 8) {
+        if (ui.*.composer.len > 0) { ui.*.composer = ui.*.composer[0..ui.*.composer.len - 1]; }
+        return;
+    }
+    if (code >= 32 && code < 127 && ui.*.composer.len < 4096) {
+        ui.*.composer = _zag_str_concat(ui.*.composer, one_char(code));
+    }
+}
+
+fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
+    let pressed: bool = (btn & 1) != 0 && (ui.*.last_btn & 1) == 0;
+    ui.*.last_btn = btn;
+    if (!pressed) { return; }
+    if (mx >= 14 && mx < 234 && my >= 80 && my < 108) {
+        ui_new_session(ui);
+        return;
+    }
+    if (mx >= 14 && mx < 234 && my >= 116 && my < h - 48) {
+        let idx: i32 = (my - 116) / 36;
+        if (idx >= 0 && idx < ui.*.core.*.store.*.sessions.len) {
+            let session: *Session = ui.*.core.*.store.*.sessions.data[idx];
+            let cmd: AppCommand = core_command(AppCommandKind.session_select, session.*.id, "");
+            let _ok: bool = ui_command(ui, cmd);
+        }
+        return;
+    }
+    if (mx >= 290 && mx < w - 40 && my >= h - 104 && my < h - 60) {
+        ui.*.composer_focused = true;
+        return;
+    }
+    if (mx >= w - 136 && mx < w - 18 && my >= 8 && my < 34) {
+        ui.*.settings_open = true;
+    }
+}
+
 fn draw_button(f: *FB, x: i32, y: i32, w: i32, label: []u8, active: bool) void {
     let bg: i64 = rgb(38, 34, 32);
     if (active) { bg = rgb(82, 66, 38); }
     fill_rect(f, x, y, w, 28, bg);
     round_rect_outline(f, x, y, w, 28, 5, rgb(110, 92, 57));
-    draw_text(f, x + 10, y + 10, label, rgb(235, 226, 208));
+    draw_text_max(f, x + 10, y + 10, label, rgb(235, 226, 208), w - 18);
 }
 
-fn render(f: *FB, w: i32, h: i32, selected: i32, recovery: bool) void {
-    fill_rect(f, 0, 0, w, h, rgb(13, 11, 10));
-    fill_rect(f, 0, 0, w, 40, rgb(28, 25, 23));
-    draw_text_scaled(f, 18, 14, "KORYPHAIOS", rgb(229, 194, 108), 2);
-    draw_text(f, w - 190, 16, "Native Zag desktop", rgb(183, 172, 155));
-
-    fill_rect(f, 0, 40, 248, h - 40, rgb(20, 18, 16));
+fn draw_sessions(f: *FB, ui: *NativeUi, h: i32) void {
     draw_text(f, 18, 62, "SESSIONS", rgb(183, 172, 155));
-    draw_button(f, 14, 80, 220, "+ New session", selected == 0);
-    draw_button(f, 14, 116, 220, "Koryphaios rewrite", selected == 1);
-    draw_button(f, 14, 152, 220, "Provider setup", selected == 2);
-    draw_button(f, 14, 188, 220, "Notes and memory", selected == 3);
-    draw_text(f, 18, h - 36, "Ctrl+K commands  Ctrl+, settings", rgb(139, 129, 116));
-
-    fill_rect(f, 248, 40, w - 248, h - 40, rgb(18, 16, 15));
-    if (recovery) {
-        draw_text_scaled(f, 290, 94, "Startup recovery", rgb(235, 185, 103), 2);
-        draw_text(f, 290, 138, "Core readiness failed. No partial workspace is shown.", rgb(236, 223, 207));
-        draw_button(f, 290, 170, 160, "Retry startup", true);
-        draw_text(f, 290, 218, "Use --diagnostics for the local readiness report.", rgb(183, 172, 155));
-    } else {
-        draw_text_scaled(f, 290, 92, "Koryphaios", rgb(239, 230, 215), 2);
-        draw_text(f, 290, 132, "Native X11 shell is active. The browser UI is not started.", rgb(204, 192, 175));
-        draw_text(f, 290, 158, "Commands and events cross the typed in-process boundary.", rgb(204, 192, 175));
-        draw_text(f, 290, 210, "Provider and migration services are tracked in the parity matrix.", rgb(183, 172, 155));
-        fill_rect(f, 290, h - 104, w - 330, 44, rgb(35, 31, 29));
-        round_rect_outline(f, 290, h - 104, w - 330, 44, 6, rgb(110, 92, 57));
-        draw_text(f, 304, h - 84, "Message Koryphaios  (native composer foundation)", rgb(139, 129, 116));
+    draw_button(f, 14, 80, 220, "+ New session", false);
+    let i: i32 = 0;
+    while (i < ui.*.core.*.store.*.sessions.len && 116 + i * 36 < h - 48) {
+        let session: *Session = ui.*.core.*.store.*.sessions.data[i];
+        draw_button(f, 14, 116 + i * 36, 220, session.*.title,
+            str_eq(session.*.id, ui.*.core.*.active_session_id));
+        i = i + 1;
     }
 }
 
+fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
+    draw_text_scaled(f, 290, 80, "Koryphaios", rgb(239, 230, 215), 2);
+    if (ui.*.core.*.active_session_id.len == 0) {
+        draw_text(f, 290, 126, "Create a session to begin.", rgb(204, 192, 175));
+    } else {
+        draw_text(f, 290, 126, "Native session active", rgb(204, 192, 175));
+    }
+    let start: i32 = 0;
+    if (ui.*.core.*.events.len > 6) { start = ui.*.core.*.events.len - 6; }
+    let i: i32 = start;
+    let y: i32 = 170;
+    while (i < ui.*.core.*.events.len && y < h - 150) {
+        let event: *AppEvent = ui.*.core.*.events.data[i];
+        let prefix: []u8 = "event";
+        if (event.*.kind == AppEventKind.message_added) { prefix = "you"; }
+        if (event.*.kind == AppEventKind.command_rejected) { prefix = "error"; }
+        if (event.*.kind == AppEventKind.session_changed) { prefix = "session"; }
+        draw_text(f, 290, y, _zag_str_concat(prefix, _zag_str_concat(": ", event.*.payload)), rgb(204, 192, 175));
+        y = y + 28;
+        i = i + 1;
+    }
+    fill_rect(f, 290, h - 104, w - 330, 44, rgb(35, 31, 29));
+    let composer_border: i64 = rgb(110, 92, 57);
+    if (ui.*.composer_focused) { composer_border = rgb(213, 178, 97); }
+    round_rect_outline(f, 290, h - 104, w - 330, 44, 6, composer_border);
+    let prompt: []u8 = ui.*.composer;
+    if (prompt.len == 0) { prompt = "Message Koryphaios"; }
+    draw_text_max(f, 304, h - 84, prompt, rgb(204, 192, 175), w - 380);
+    if (ui.*.last_error.len > 0) {
+        draw_text_max(f, 290, h - 44, ui.*.last_error, rgb(235, 130, 110), w - 330);
+    } else {
+        draw_text(f, 290, h - 44, "Enter sends  |  exact usage appears only when provider-reported", rgb(139, 129, 116));
+    }
+}
+
+fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
+    fill_rect(f, 270, 58, w - 310, h - 106, rgb(28, 25, 23));
+    round_rect_outline(f, 270, 58, w - 310, h - 106, 8, rgb(110, 92, 57));
+    draw_text_scaled(f, 292, 82, "Providers", rgb(239, 230, 215), 2);
+    draw_text(f, 292, 116, "Distinct identities; availability is never fabricated.", rgb(183, 172, 155));
+    let i: i32 = 0;
+    while (i < ui.*.core.*.providers.len && 148 + i * 25 < h - 68) {
+        let provider: *ProviderIdentity = ui.*.core.*.providers.data[i];
+        let state: []u8 = "unavailable";
+        if (provider.*.available) { state = "available"; }
+        draw_text(f, 292, 148 + i * 25,
+            _zag_str_concat(provider.*.name_, _zag_str_concat("  [", _zag_str_concat(provider.*.transport, _zag_str_concat("]  ", state)))),
+            rgb(204, 192, 175));
+        i = i + 1;
+    }
+}
+
+fn draw_palette(f: *FB, w: i32) void {
+    fill_rect(f, w / 2 - 260, 92, 520, 130, rgb(28, 25, 23));
+    round_rect_outline(f, w / 2 - 260, 92, 520, 130, 8, rgb(213, 178, 97));
+    draw_text_scaled(f, w / 2 - 238, 116, "Command palette", rgb(239, 230, 215), 2);
+    draw_text(f, w / 2 - 238, 158, "Ctrl+N  New session", rgb(204, 192, 175));
+    draw_text(f, w / 2 - 238, 184, "Ctrl+,  Provider settings", rgb(204, 192, 175));
+}
+
+fn render(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
+    fill_rect(f, 0, 0, w, h, rgb(13, 11, 10));
+    fill_rect(f, 0, 0, w, 40, rgb(28, 25, 23));
+    draw_text_scaled(f, 18, 14, "KORYPHAIOS", rgb(229, 194, 108), 2);
+    if (ui.*.safe_mode) { draw_text(f, w - 250, 16, "SAFE MODE", rgb(235, 185, 103)); }
+    draw_button(f, w - 136, 7, 118, "Providers", ui.*.settings_open);
+    fill_rect(f, 0, 40, 248, h - 40, rgb(20, 18, 16));
+    draw_sessions(f, ui, h);
+    draw_text(f, 18, h - 30, "Ctrl+K commands", rgb(139, 129, 116));
+    fill_rect(f, 248, 40, w - 248, h - 40, rgb(18, 16, 15));
+    if (!ui.*.core.*.ready) {
+        draw_text_scaled(f, 290, 94, "Startup recovery", rgb(235, 185, 103), 2);
+        draw_text(f, 290, 138, "Core readiness failed. No partial workspace is shown.", rgb(236, 223, 207));
+        draw_text(f, 290, 176, ui.*.core.*.error_code, rgb(235, 130, 110));
+        draw_text(f, 290, 214, "The invalid schema was backed up for diagnostics.", rgb(183, 172, 155));
+        return;
+    }
+    draw_feed(f, ui, w, h);
+    if (ui.*.settings_open) { draw_settings(f, ui, w, h); }
+    if (ui.*.palette_open) { draw_palette(f, w); }
+}
+
 fn run_headless() i32 {
-    let f: FB = fb_new(1024, 640);
-    render(&f, 1024, 640, 1, false);
-    if (arg_has("--capture")) { fb_write_bmp(&f, arg_after("--capture", "koryphaios-native.bmp")); }
-    _zag_println("native-headless: PASS contract=AppCommand/AppEvent renderer=framebuffer");
+    let root: []u8 = _zag_str_concat("/tmp/koryphaios-ui-", _zag_i64_to_str(util_getpid()));
+    let core: *AppCore = core_open(root);
+    let ui: *NativeUi = ui_new(core, true);
+    ui_key(ui, 'n', 2);
+    ui_key(ui, 'h', 0);
+    ui_key(ui, 'i', 0);
+    ui_key(ui, 13, 0);
+    ui_key(ui, 'k', 2);
+    let palette_works: bool = ui.*.palette_open;
+    ui_key(ui, 27, 0);
+    if (!core.*.ready || core.*.store.*.sessions.len != 1 ||
+        core.*.store.*.sessions.data[0].*.message_count != 1 || !palette_works) {
+        _zag_eprintln("native-headless: FAIL workflow");
+        return 1;
+    }
+    // Pointer activation of New Session must create and select a second session.
+    ui_pointer(ui, 20, 90, 1, 1024, 640);
+    ui_pointer(ui, 20, 90, 0, 1024, 640);
+    if (core.*.store.*.sessions.len != 2) {
+        _zag_eprintln("native-headless: FAIL pointer");
+        return 1;
+    }
+    let width: i32 = arg_i_after("--width", 1024);
+    let height: i32 = arg_i_after("--height", 640);
+    let scale: i32 = arg_i_after("--scale", 1);
+    if (width < 320 || height < 240 || width > 4096 || height > 4096) {
+        _zag_eprintln("native-headless: FAIL dimensions");
+        return 1;
+    }
+    if (scale < 1 || scale > 3 || width / scale < 320 || height / scale < 240) {
+        _zag_eprintln("native-headless: FAIL scale");
+        return 1;
+    }
+    let logical: FB = fb_new(width / scale, height / scale);
+    render(&logical, ui, logical.w, logical.h);
+    if (arg_has("--capture")) {
+        let path: []u8 = arg_after("--capture", "koryphaios-native.bmp");
+        if (scale == 1) {
+            fb_write_bmp(&logical, path);
+        } else {
+            let physical: FB = fb_new(width, height);
+            fb_upscale(&physical, &logical, scale);
+            fb_write_bmp(&physical, path);
+        }
+    }
+    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create message=persist renderer=framebuffer");
+    return 0;
+}
+
+fn run_x11_selftest() i32 {
+    let x: *X11 = x11_connect(640, 400, "Koryphaios X11 selftest");
+    if (!x.*.ok) { _zag_eprintln("native-x11-selftest: no X server"); return 1; }
+    let root: []u8 = _zag_str_concat("/tmp/koryphaios-x11-", _zag_i64_to_str(util_getpid()));
+    let ui: *NativeUi = ui_new(core_open(root), true);
+    let f: FB = fb_new(640, 400);
+    render(&f, ui, 640, 400);
+    x11_put_frame(x, f.px.data, f.w, f.h);
+    x11_pump(x);
+    x11_close(x);
+    _zag_println("native-x11-selftest: PASS connect render present pump close");
     return 0;
 }
 
 fn run_x11() i32 {
+    let core: *AppCore = core_open(data_dir_from_args());
+    let ui: *NativeUi = ui_new(core, arg_has("--safe-mode"));
     let x: *X11 = x11_connect(1280, 720, "Koryphaios");
     if (!x.*.ok) {
         _zag_eprintln("native-x11: no X server; use --headless-test");
         return 1;
     }
     let f: FB = fb_new(x.*.win_w, x.*.win_h);
-    let selected: i32 = 1;
-    let recovery: bool = arg_has("--safe-mode");
     while (!x.*.should_close) {
         x11_pump(x);
         if (f.w != x.*.win_w || f.h != x.*.win_h) { fb_resize(&f, x.*.win_w, x.*.win_h); }
-        render(&f, f.w, f.h, selected, recovery);
+        let k: i32 = 0;
+        while (k < x.*.keys.len) {
+            ui_key(ui, x.*.keys.data[k], x.*.mods);
+            k = k + 1;
+        }
+        ui_pointer(ui, x.*.mx, x.*.my, x.*.btn, f.w, f.h);
+        render(&f, ui, f.w, f.h);
         x11_put_frame(x, f.px.data, f.w, f.h);
         x11_sleep_ms(16);
     }
@@ -91,11 +333,17 @@ fn run_x11() i32 {
 }
 
 fn main() i32 {
-    if (arg_has("--version")) { _zag_println("koryphaios-zag 0.1.0-native"); return 0; }
+    if (arg_has("--version")) { _zag_println("koryphaios-zag 0.2.0-native-core"); return 0; }
     if (arg_has("--diagnostics")) {
-        _zag_println("diagnostics: ui=x11 core=in-process http=disabled tls-pki=not-ready");
+        let core: *AppCore = core_open(data_dir_from_args());
+        _zag_print("diagnostics: ui=x11 core=in-process http=disabled providers=");
+        _zag_print(_zag_i64_to_str(core.*.providers.len as i64));
+        _zag_print(" storage=");
+        if (core.*.ready) { _zag_print("ready"); } else { _zag_print(core.*.error_code); }
+        _zag_println(" tls-pki=not-ready");
         return 0;
     }
-    if (arg_has("--headless-test") || arg_has("--capture") || arg_has("--x11-selftest")) { return run_headless(); }
+    if (arg_has("--headless-test") || arg_has("--capture")) { return run_headless(); }
+    if (arg_has("--x11-selftest")) { return run_x11_selftest(); }
     return run_x11();
 }

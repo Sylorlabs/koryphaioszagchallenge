@@ -13,9 +13,10 @@ enum AppCommandKind {
 enum AppEventKind {
     startup_ready,
     session_changed,
-    message_stream,
+    message_added,
     provider_changed,
     recovery_required,
+    command_rejected,
 }
 
 struct AppCommand {
@@ -28,4 +29,5 @@ struct AppEvent {
     kind: AppEventKind,
     session_id: []u8,
     payload: []u8,
+    code: []u8,
 }

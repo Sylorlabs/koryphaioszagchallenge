@@ -6,11 +6,14 @@ asset server, REST UI boundary, or WebSocket UI boundary.
 
 ## Current status
 
-This is the native platform foundation, not a release candidate. The application
+This is the native core foundation, not a release candidate. The application
 opens an X11 window rendered by a locally tracked pure-Zag software framebuffer.
 Its user-interface commands use the typed AppCommand/AppEvent boundary in
-src/native/contract.zag. The old browser implementation is present only in Git
-history and in the reference snapshot used for parity inventory.
+src/native/contract.zag. Session creation, selection, user-message persistence,
+restart recovery, provider inventory, keyboard input, pointer activation, and
+deterministic capture are exercised without browser transport. The old browser
+implementation is present only in Git history and in the reference snapshot
+used for parity inventory.
 
 The work still required before release is deliberately documented in
 docs/RELEASE_STATUS.md and docs/PARITY_BASELINE.md. In particular, X.509 chain
@@ -23,7 +26,9 @@ The checked compiler is the native Zag compiler described in TOOLCHAIN.lock.
 
     ./build.sh
     ./build/koryphaios --headless-test
-    ./build/koryphaios --capture /tmp/koryphaios-native.bmp
+    ./build/koryphaios --capture /tmp/koryphaios-native.bmp --width 1280 --height 800 --scale 2
+    ./build/koryphaios --x11-selftest
+    ./build/koryphaios --project /path/to/project
     ./build/koryphaios --diagnostics
     ./build/koryphaios
 
@@ -32,9 +37,11 @@ The checked compiler is the native Zag compiler described in TOOLCHAIN.lock.
     ./verify.sh foundation
     ./verify.sh release
 
-The foundation gate must pass for this milestone. The release gate intentionally
-fails closed while release-required capability evidence is unresolved; its TSV
-records name every blocker rather than masking it with placeholders.
+The foundation gate must pass for this milestone. It includes strict build,
+core persistence/recovery, keyboard/pointer workflow, browser-boundary and
+forbidden-marker audits, four deterministic captures including HiDPI, and
+byte-identical capture comparison. The release gate intentionally fails closed
+while release-required capability evidence is unresolved.
 
 ## Provenance
 

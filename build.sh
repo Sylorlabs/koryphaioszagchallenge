@@ -14,6 +14,6 @@ echo "── zrt test suite"
 "$ZNC" src/zrt/zrt_test.zag -o build/zrt_test --run 2>&1 | grep -iE "ALL PASS|checks passed" | tail -1
 
 echo "── native koryphaios"
-"$ZNC" src/native/main.zag -o build/koryphaios
+"$ZNC" src/native/main.zag -o build/koryphaios --analyze-strict
 ls -la build/koryphaios
-echo "run: ./build/koryphaios   (KORYPHAIOS_PORT=3001 by default)"
+echo "run: ./build/koryphaios   (--project PATH, --safe-mode, or --headless-test)"
