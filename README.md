@@ -6,13 +6,14 @@ asset server, REST UI boundary, or WebSocket UI boundary.
 
 ## Current status
 
-This is the native core foundation, not a release candidate. The application
+This is an active native rewrite, not a release candidate. The application
 opens an X11 window rendered by a locally tracked pure-Zag software framebuffer.
 Its user-interface commands use the typed AppCommand/AppEvent boundary in
-src/native/contract.zag. Session creation, selection, user-message persistence,
-restart recovery, provider inventory and executable-only CLI detection, keyboard
-input, pointer activation, and deterministic capture are exercised without
-browser transport. The old browser
+src/native/contract.zag. Session creation, untouched-session reuse, force-new,
+rename, confirmed deletion, selection, user-message and preference persistence,
+restart recovery, provider inventory and executable-only CLI detection,
+keyboard input, pointer activation, and deterministic capture are exercised
+without browser transport. The old browser
 implementation is present only in Git history and in the reference snapshot
 used for parity inventory.
 
@@ -23,7 +24,10 @@ and performance evidence are not represented as completed.
 
 ## Build and run
 
-The checked compiler is the native Zag compiler described in TOOLCHAIN.lock.
+The checked compiler is the native Zag compiler described in TOOLCHAIN.lock and
+pinned as a Git submodule.
+
+    git submodule update --init --recursive
 
     ./build.sh
     ./build/koryphaios --headless-test
@@ -38,10 +42,11 @@ The checked compiler is the native Zag compiler described in TOOLCHAIN.lock.
     ./verify.sh foundation
     ./verify.sh release
 
-The foundation gate must pass for this milestone. It includes strict build,
+The foundation gate must pass for every milestone. It includes strict build,
 core persistence/recovery, keyboard/pointer workflow, browser-boundary and
-forbidden-marker audits, four deterministic captures including HiDPI, and
-byte-identical capture comparison. The release gate intentionally fails closed
+forbidden-marker audits, repository/source/secret/toolchain provenance policy,
+four deterministic captures including HiDPI, and byte-identical capture
+comparison. The release gate intentionally fails closed
 while release-required capability evidence is unresolved.
 
 ## Provenance

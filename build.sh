@@ -2,7 +2,7 @@
 # Build the native X11 Koryphaios desktop application.
 set -euo pipefail
 cd "$(dirname "$0")"
-ZNC="${ZNC:-/home/micah/Desktop/Sylorlabs/zag/zag-poc/znc}"
+ZNC="${ZNC:-$PWD/toolchain/zag/zag-poc/znc}"
 mkdir -p build
 
 echo "── crypto test vectors (RFC 4231/5869/8439/7748)"

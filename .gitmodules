@@ -1,0 +1,4 @@
+[submodule "toolchain/zag"]
+	path = toolchain/zag
+	url = https://github.com/Sylorlabs/zag.git
+	branch = zag-v2-machine-control

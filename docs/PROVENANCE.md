@@ -12,5 +12,8 @@ The original product behavior baseline is the sibling Koryphaios checkout:
 - state: dirty at capture; its status fingerprint is recorded in
   docs/PARITY_BASELINE.md.
 
-The compiler lock records both the upstream Git revision and the exact local
-native compiler digest. A verifier failure means the build is not reproducible.
+Zag is pinned as the `toolchain/zag` Git submodule from
+`https://github.com/Sylorlabs/zag.git`. `TOOLCHAIN.lock` records the exact
+submodule revision, native code-generator digest, compiler version, and compiler
+binary digest. The tracked compiler binary is rebuilt from that pure-Zag source
+at the same revision. A verifier failure means the build is not reproducible.

@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 profile="${1:-foundation}"
-znc="${ZNC:-/home/micah/Desktop/Sylorlabs/zag/zag-poc/znc}"
+znc="${ZNC:-$PWD/toolchain/zag/zag-poc/znc}"
 fail=0
 
 record() {
@@ -12,6 +12,20 @@ record() {
   printf '%s\t%s\t%s\n' "$name" "$result" "$detail"
   if [[ "$result" != "pass" ]]; then fail=1; fi
 }
+
+if audit_output="$(tools/repository-audit.sh 2>/tmp/koryphaios-repository-audit.log)"; then
+  record repository-audit pass tracked-source-secrets-provenance-toolchain-generated
+else
+  record repository-audit fail policy-violation
+  printf '%s\n' "$audit_output" >&2
+  sed -n '1,80p' /tmp/koryphaios-repository-audit.log >&2
+fi
+
+if tools/repository-audit-selftest.sh | rg -q 'repository-audit-selftest: PASS'; then
+  record repository-audit-selftest pass negative-fixtures
+else
+  record repository-audit-selftest fail fixture-failure
+fi
 
 if [[ -x "$znc" ]]; then record compiler-path pass native; else record compiler-path fail missing; fi
 expected="$(awk -F= '$1 == "znc_sha256" { print $2 }' TOOLCHAIN.lock)"
