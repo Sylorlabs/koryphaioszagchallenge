@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Koryphaios
+Comment=Native Zag agent workspace
+Exec=koryphaios
+Icon=koryphaios
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+StartupWMClass=Koryphaios

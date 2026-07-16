@@ -101,13 +101,19 @@ build/koryphaios --capture "$capture_a" --width 1024 --height 640 >/dev/null
 build/koryphaios --capture "$capture_b" --width 1024 --height 640 >/dev/null
 if cmp -s "$capture_a" "$capture_b"; then record capture-determinism pass byte-identical; else record capture-determinism fail changed-pixels; fi
 
+if tools/package-selftest.sh | rg -q 'package-selftest: PASS'; then
+  record packaging-foundation pass static-checksums-install-launch-uninstall
+else
+  record packaging-foundation fail package-selftest
+fi
+
 case "$profile" in
   foundation) ;;
   release)
     record parity fail unresolved-native-workflows
     record tls-pki fail x509-chain-validation-not-implemented
     record accessibility fail atspi-not-implemented
-    record packaging fail release-artifacts-not-implemented
+    record packaging fail signed-update-manifest-not-provisioned
     ;;
   *)
     record invocation fail unknown-profile

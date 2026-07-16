@@ -30,6 +30,11 @@ Project memory and rules now remain authoritative Markdown under
 keyboard editors load them at startup and write atomically with bounded size and
 stable errors; they are not mirrored into an opaque database.
 
+Foundation packaging now produces and verifies a static ELF, desktop entry,
+tracked-provenance icon, checksums, and staged install/launch/uninstall scripts.
+The update manifest remains deliberately unsigned and the release gate fails
+until offline signing and runtime signature verification are provisioned.
+
 The Zag compiler defect exposed by this application was fixed source-first in
 the sibling Zag checkout: qualified generic function signatures now register
 their substituted generic struct layouts before type normalization. Native
@@ -37,7 +42,7 @@ container access uses the normal list.get API again; the local compiler digest
 and relevant source digest are pinned in TOOLCHAIN.lock.
 
 The release remains blocked on the remaining real provider adapters, regeneration, complete in-process service migration,
-Secret-Service/vault storage, X.509 chain validation, provider execution, full
-native workflows, AT-SPI, legacy-data migration fixtures, packaging, and
-performance evidence. The release verifier fails closed for those unresolved
-requirements.
+Secret-Service/vault storage, X.509 chain validation, remaining provider
+execution, full native workflows, AT-SPI, legacy-data migration fixtures,
+signed release packaging, and performance evidence. The release verifier fails
+closed for those unresolved requirements.

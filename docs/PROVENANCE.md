@@ -17,3 +17,7 @@ Zag is pinned as the `toolchain/zag` Git submodule from
 submodule revision, native code-generator digest, compiler version, and compiler
 binary digest. The tracked compiler binary is rebuilt from that pure-Zag source
 at the same revision. A verifier failure means the build is not reproducible.
+
+The packaged 192px application icon is reused from the tracked Koryphaios parity
+snapshot at `reference/Koryphaios/frontend/static/logo-192.png` under the same
+Apache-2.0 project license. It is copied only into generated release artifacts.
