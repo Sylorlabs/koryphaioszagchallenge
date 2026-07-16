@@ -4,6 +4,7 @@
 @import("fb.zag")
 @import("x11.zag")
 @import("core.zag")
+@import("../../zagstd/list.zag") as list
 
 struct NativeUi {
     core: *AppCore,
@@ -69,7 +70,7 @@ fn one_char(code: i32) []u8 {
 
 fn ui_last_event(ui: *NativeUi) ?*AppEvent {
     if (ui.*.core.*.events.len == 0) { return null; }
-    return ui.*.core.*.events.data[ui.*.core.*.events.len - 1];
+    return list.get[*AppEvent](ui.*.core.*.events, ui.*.core.*.events.len - 1);
 }
 
 fn ui_command(ui: *NativeUi, cmd: AppCommand) bool {
@@ -134,7 +135,7 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
     if (mx >= 14 && mx < 234 && my >= 116 && my < h - 48) {
         let idx: i32 = (my - 116) / 36;
         if (idx >= 0 && idx < ui.*.core.*.store.*.sessions.len) {
-            let session: *Session = ui.*.core.*.store.*.sessions.data[idx];
+            let session: *Session = list.get[*Session](ui.*.core.*.store.*.sessions, idx);
             let cmd: AppCommand = core_command(AppCommandKind.session_select, session.*.id, "");
             let _ok: bool = ui_command(ui, cmd);
         }
@@ -163,7 +164,7 @@ fn draw_sessions(f: *FB, ui: *NativeUi, h: i32) void {
     draw_button(f, 14, 80, 220, "+ New session", false);
     let i: i32 = 0;
     while (i < ui.*.core.*.store.*.sessions.len && 116 + i * 36 < h - 48) {
-        let session: *Session = ui.*.core.*.store.*.sessions.data[i];
+        let session: *Session = list.get[*Session](ui.*.core.*.store.*.sessions, i);
         draw_button(f, 14, 116 + i * 36, 220, session.*.title,
             str_eq(session.*.id, ui.*.core.*.active_session_id));
         i = i + 1;
@@ -182,7 +183,7 @@ fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     let i: i32 = start;
     let y: i32 = 170;
     while (i < ui.*.core.*.events.len && y < h - 150) {
-        let event: *AppEvent = ui.*.core.*.events.data[i];
+        let event: *AppEvent = list.get[*AppEvent](ui.*.core.*.events, i);
         let prefix: []u8 = "event";
         if (event.*.kind == AppEventKind.message_added) { prefix = "you"; }
         if (event.*.kind == AppEventKind.command_rejected) { prefix = "error"; }
@@ -212,7 +213,7 @@ fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     draw_text(f, 292, 116, "Distinct identities; CLI availability comes from executable PATH checks.", rgb(183, 172, 155));
     let i: i32 = 0;
     while (i < ui.*.core.*.providers.len && 148 + i * 25 < h - 68) {
-        let provider: *ProviderIdentity = ui.*.core.*.providers.data[i];
+        let provider: *ProviderIdentity = list.get[*ProviderIdentity](ui.*.core.*.providers, i);
         let state: []u8 = "unavailable";
         if (provider.*.available) { state = "available"; }
         draw_text(f, 292, 148 + i * 25,
@@ -266,10 +267,10 @@ fn run_headless() i32 {
     ui_key(ui, ',', 2);
     let settings_works: bool = ui.*.settings_open &&
         ui_last_event(ui) != null &&
-        ui.*.core.*.events.data[ui.*.core.*.events.len - 1].*.kind == AppEventKind.provider_changed;
+        list.get[*AppEvent](ui.*.core.*.events, ui.*.core.*.events.len - 1).*.kind == AppEventKind.provider_changed;
     ui_key(ui, 27, 0);
     if (!core.*.ready || core.*.store.*.sessions.len != 1 ||
-        core.*.store.*.sessions.data[0].*.message_count != 1 || !palette_works || !settings_works) {
+        list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 1 || !palette_works || !settings_works) {
         _zag_eprintln("native-headless: FAIL workflow");
         return 1;
     }
@@ -335,7 +336,7 @@ fn run_x11() i32 {
         if (f.w != x.*.win_w || f.h != x.*.win_h) { fb_resize(&f, x.*.win_w, x.*.win_h); }
         let k: i32 = 0;
         while (k < x.*.keys.len) {
-            ui_key(ui, x.*.keys.data[k], x.*.mods);
+            ui_key(ui, list.get[i32](x.*.keys, k), x.*.mods);
             k = k + 1;
         }
         ui_pointer(ui, x.*.mx, x.*.my, x.*.btn, f.w, f.h);

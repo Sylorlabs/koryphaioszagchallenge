@@ -14,6 +14,12 @@ a live X11 connect/render/present/pump/close test. Provider refresh performs
 pure-Zag executable PATH checks for Jules, Gemini CLI, Codex, Claude Code,
 Cursor Agent, and Cline without invoking project-local impostors.
 
+The Zag compiler defect exposed by this application was fixed source-first in
+the sibling Zag checkout: qualified generic function signatures now register
+their substituted generic struct layouts before type normalization. Native
+container access uses the normal list.get API again; the local compiler digest
+and relevant source digest are pinned in TOOLCHAIN.lock.
+
 The release remains blocked on complete in-process service migration,
 Secret-Service/vault storage, X.509 chain validation, provider execution, full
 native workflows, AT-SPI, legacy-data migration fixtures, packaging, and
