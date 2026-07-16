@@ -92,11 +92,20 @@ fn ui_send(ui: *NativeUi) void {
     if (ui_command(ui, cmd)) { ui.*.composer = ""; }
 }
 
+fn ui_refresh_providers(ui: *NativeUi) void {
+    let cmd: AppCommand = core_command(AppCommandKind.provider_refresh, "", "");
+    let _ok: bool = ui_command(ui, cmd);
+}
+
 fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
     let ctrl: bool = (mods & 2) != 0;
     if (ctrl && code == 'n') { ui_new_session(ui); return; }
     if (ctrl && code == 'k') { ui.*.palette_open = !ui.*.palette_open; return; }
-    if (ctrl && code == ',') { ui.*.settings_open = !ui.*.settings_open; return; }
+    if (ctrl && code == ',') {
+        ui.*.settings_open = !ui.*.settings_open;
+        if (ui.*.settings_open) { ui_refresh_providers(ui); }
+        return;
+    }
     if (code == 27) {
         ui.*.palette_open = false;
         ui.*.settings_open = false;
@@ -137,6 +146,7 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
     }
     if (mx >= w - 136 && mx < w - 18 && my >= 8 && my < 34) {
         ui.*.settings_open = true;
+        ui_refresh_providers(ui);
     }
 }
 
@@ -199,7 +209,7 @@ fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     fill_rect(f, 270, 58, w - 310, h - 106, rgb(28, 25, 23));
     round_rect_outline(f, 270, 58, w - 310, h - 106, 8, rgb(110, 92, 57));
     draw_text_scaled(f, 292, 82, "Providers", rgb(239, 230, 215), 2);
-    draw_text(f, 292, 116, "Distinct identities; availability is never fabricated.", rgb(183, 172, 155));
+    draw_text(f, 292, 116, "Distinct identities; CLI availability comes from executable PATH checks.", rgb(183, 172, 155));
     let i: i32 = 0;
     while (i < ui.*.core.*.providers.len && 148 + i * 25 < h - 68) {
         let provider: *ProviderIdentity = ui.*.core.*.providers.data[i];
@@ -253,8 +263,13 @@ fn run_headless() i32 {
     ui_key(ui, 'k', 2);
     let palette_works: bool = ui.*.palette_open;
     ui_key(ui, 27, 0);
+    ui_key(ui, ',', 2);
+    let settings_works: bool = ui.*.settings_open &&
+        ui_last_event(ui) != null &&
+        ui.*.core.*.events.data[ui.*.core.*.events.len - 1].*.kind == AppEventKind.provider_changed;
+    ui_key(ui, 27, 0);
     if (!core.*.ready || core.*.store.*.sessions.len != 1 ||
-        core.*.store.*.sessions.data[0].*.message_count != 1 || !palette_works) {
+        core.*.store.*.sessions.data[0].*.message_count != 1 || !palette_works || !settings_works) {
         _zag_eprintln("native-headless: FAIL workflow");
         return 1;
     }

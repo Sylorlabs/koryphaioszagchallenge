@@ -17,6 +17,15 @@ fn main() i32 {
         core_find_provider(core, "jules") != null &&
         core_find_provider(core, "gemini-cli") != null, &failures);
 
+    let fake_bin: []u8 = _zag_str_concat(root, "/bin");
+    util_mkdir(fake_bin);
+    let fake_codex: []u8 = _zag_str_concat(fake_bin, "/codex");
+    util_write_atomic(fake_codex, "#!/bin/sh\nexit 0\n");
+    util_chmod(fake_codex, 493);
+    check("PATH detection requires an executable and ignores empty entries",
+        str_eq(core_find_executable_in_path("codex", _zag_str_concat(":", fake_bin)), fake_codex) &&
+        core_find_executable_in_path("missing", fake_bin).len == 0, &failures);
+
     let make_session: AppCommand = core_command(AppCommandKind.session_new, "", "Native workflow");
     check("session_new command succeeds", core_dispatch(core, &make_session), &failures);
     check("session is selected and persisted", core.*.store.*.sessions.len == 1 &&

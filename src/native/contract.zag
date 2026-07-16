@@ -6,6 +6,7 @@ enum AppCommandKind {
     session_select,
     message_send,
     provider_open,
+    provider_refresh,
     settings_open,
     recovery_retry,
 }

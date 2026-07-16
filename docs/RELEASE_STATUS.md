@@ -10,7 +10,9 @@ Implemented evidence now covers typed in-process commands/events, native session
 creation and selection, user-message persistence, restart recovery, schema
 corruption backup, stable error codes, distinct provider identities, keyboard
 and pointer paths, deterministic captures at four size/scale combinations, and
-a live X11 connect/render/present/pump/close test.
+a live X11 connect/render/present/pump/close test. Provider refresh performs
+pure-Zag executable PATH checks for Jules, Gemini CLI, Codex, Claude Code,
+Cursor Agent, and Cline without invoking project-local impostors.
 
 The release remains blocked on complete in-process service migration,
 Secret-Service/vault storage, X.509 chain validation, provider execution, full

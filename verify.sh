@@ -40,7 +40,7 @@ fi
 
 if "$znc" src/native/core_test.zag -o build/core_test --analyze-strict >/tmp/koryphaios-zag-core-build.log 2>&1 &&
    build/core_test | rg -q 'NATIVE CORE: ALL PASS'; then
-  record native-core pass persistence-recovery-providers-errors
+  record native-core pass persistence-recovery-provider-detection-errors
 else
   record native-core fail failed
   sed -n '1,80p' /tmp/koryphaios-zag-core-build.log >&2

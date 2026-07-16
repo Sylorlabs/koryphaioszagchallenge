@@ -10,8 +10,9 @@ This is the native core foundation, not a release candidate. The application
 opens an X11 window rendered by a locally tracked pure-Zag software framebuffer.
 Its user-interface commands use the typed AppCommand/AppEvent boundary in
 src/native/contract.zag. Session creation, selection, user-message persistence,
-restart recovery, provider inventory, keyboard input, pointer activation, and
-deterministic capture are exercised without browser transport. The old browser
+restart recovery, provider inventory and executable-only CLI detection, keyboard
+input, pointer activation, and deterministic capture are exercised without
+browser transport. The old browser
 implementation is present only in Git history and in the reference snapshot
 used for parity inventory.
 

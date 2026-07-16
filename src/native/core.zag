@@ -8,6 +8,8 @@ struct ProviderIdentity {
     id: []u8,
     name_: []u8,
     transport: []u8,
+    executable: []u8,
+    detected_path: []u8,
     available: bool,
 }
 
@@ -30,28 +32,75 @@ fn core_event(core: *AppCore, kind: AppEventKind, sid: []u8, payload: []u8, code
     }));
 }
 
-fn core_add_provider(core: *AppCore, id: []u8, name_: []u8, transport: []u8) void {
+fn core_add_provider(core: *AppCore, id: []u8, name_: []u8, transport: []u8, executable: []u8) void {
     push[*ProviderIdentity](&core.*.providers, new(ProviderIdentity{
         .id = id,
         .name_ = name_,
         .transport = transport,
+        .executable = executable,
+        .detected_path = "",
         .available = false,
     }));
 }
 
 fn core_provider_catalog(core: *AppCore) void {
-    core_add_provider(core, "google-ai-studio", "Google AI Studio", "api");
-    core_add_provider(core, "google-api", "Google API", "api");
-    core_add_provider(core, "vertex-ai", "Vertex AI", "api");
-    core_add_provider(core, "jules", "Jules", "cli");
-    core_add_provider(core, "gemini-cli", "Gemini CLI", "cli");
-    core_add_provider(core, "codex", "Codex", "cli");
-    core_add_provider(core, "claude-code", "Claude Code", "cli");
-    core_add_provider(core, "cursor", "Cursor", "cli");
-    core_add_provider(core, "cline", "Cline", "cli");
-    core_add_provider(core, "openai", "OpenAI", "api");
-    core_add_provider(core, "anthropic", "Anthropic", "api");
-    core_add_provider(core, "ollama", "Ollama", "local");
+    core_add_provider(core, "google-ai-studio", "Google AI Studio", "api", "");
+    core_add_provider(core, "google-api", "Google API", "api", "");
+    core_add_provider(core, "vertex-ai", "Vertex AI", "api", "");
+    core_add_provider(core, "jules", "Jules", "cli", "jules");
+    core_add_provider(core, "gemini-cli", "Gemini CLI", "cli", "gemini");
+    core_add_provider(core, "codex", "Codex", "cli", "codex");
+    core_add_provider(core, "claude-code", "Claude Code", "cli", "claude");
+    core_add_provider(core, "cursor", "Cursor", "cli", "cursor-agent");
+    core_add_provider(core, "cline", "Cline", "cli", "cline");
+    core_add_provider(core, "openai", "OpenAI", "api", "");
+    core_add_provider(core, "anthropic", "Anthropic", "api", "");
+    core_add_provider(core, "ollama", "Ollama", "local", "");
+}
+
+fn core_path_executable(path: []u8) bool {
+    let cpath: *i8 = util_cpath(path);
+    let rc: i64 = _zag_raw_syscall(21, cpath as i64, 1, 0, 0, 0, 0);
+    _zag_free(cpath);
+    return rc == 0;
+}
+
+fn core_find_executable_in_path(executable: []u8, path_env: []u8) []u8 {
+    if (executable.len == 0 || path_env.len == 0) { return ""; }
+    let remaining: []u8 = path_env;
+    let searching: bool = true;
+    while (searching) {
+        let part: SplitResult = str_split_first(remaining, ':' as u8);
+        // Empty PATH entries mean the current directory. Ignore them so a
+        // project cannot impersonate a provider CLI.
+        if (part.head.len > 0) {
+            let candidate: []u8 = _zag_str_concat(part.head, _zag_str_concat("/", executable));
+            if (core_path_executable(candidate)) { return candidate; }
+        }
+        if (!part.found) { searching = false; } else { remaining = part.tail; }
+    }
+    return "";
+}
+
+fn core_refresh_providers(core: *AppCore, path_env: []u8) i32 {
+    let found: i32 = 0;
+    let i: i32 = 0;
+    while (i < core.*.providers.len) {
+        let provider: *ProviderIdentity = get[*ProviderIdentity](core.*.providers, i);
+        provider.*.available = false;
+        provider.*.detected_path = "";
+        if (str_eq(provider.*.transport, "cli") && provider.*.executable.len > 0) {
+            let path: []u8 = core_find_executable_in_path(provider.*.executable, path_env);
+            if (path.len > 0) {
+                provider.*.available = true;
+                provider.*.detected_path = path;
+                found = found + 1;
+            }
+        }
+        i = i + 1;
+    }
+    core_event(core, AppEventKind.provider_changed, "", _zag_i64_to_str(found as i64), "");
+    return found;
 }
 
 fn core_schema_path(core: *AppCore) []u8 {
@@ -163,6 +212,10 @@ fn core_dispatch(core: *AppCore, cmd: *AppCommand) bool {
             return true;
         }
         return core_reject(core, cmd, "E_PROVIDER_UNKNOWN", "The provider identity is not in the verified catalog.");
+    }
+    if (cmd.*.kind == AppCommandKind.provider_refresh) {
+        let _found: i32 = core_refresh_providers(core, _zag_getenv("PATH"));
+        return true;
     }
     if (cmd.*.kind == AppCommandKind.recovery_retry) {
         if (core_check_schema(core)) {
