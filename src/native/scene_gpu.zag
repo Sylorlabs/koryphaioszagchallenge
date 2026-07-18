@@ -1,0 +1,103 @@
+// Deterministic GPU command packet lowering for validated native scenes.
+// This packet is transport-independent: a Zag-owned GPU backend may consume it
+// while the CPU oracle remains active until submission/readback equivalence is
+// proven.
+
+@import("scene.zag")
+@import("../../zagstd/list.zag") as list
+
+struct GpuScenePacket {
+    bytes: list.ArrayList[u8],
+    command_count: i32,
+    text_bytes: i32,
+    ready: bool,
+    error_code: []u8,
+}
+fn gpu_packet_u32(out: *list.ArrayList[u8], value: i64) void {
+    list.push[u8](out, (value & 255) as u8);
+    list.push[u8](out, ((value >> 8) & 255) as u8);
+    list.push[u8](out, ((value >> 16) & 255) as u8);
+    list.push[u8](out, ((value >> 24) & 255) as u8);
+}
+
+fn gpu_packet_u64(out: *list.ArrayList[u8], value: i64) void {
+    gpu_packet_u32(out, value);
+    gpu_packet_u32(out, value >> 32);
+}
+
+fn gpu_packet_kind(kind: SceneOpKind) i32 {
+    if (kind == SceneOpKind.fill_rect) { return 1; }
+    if (kind == SceneOpKind.round_rect_outline) { return 2; }
+    if (kind == SceneOpKind.text) { return 3; }
+    if (kind == SceneOpKind.text_scaled) { return 4; }
+    if (kind == SceneOpKind.text_max) { return 5; }
+    return 0;
+}
+
+fn scene_gpu_encode(scene: *Scene) GpuScenePacket {
+    let packet: GpuScenePacket = GpuScenePacket{
+        .bytes = list.make[u8](256),
+        .command_count = 0,
+        .text_bytes = 0,
+        .ready = false,
+        .error_code = "E_GPU_PACKET_SCENE",
+    };
+    if (!scene.*.begun || scene.*.rejected || scene.*.ops.len > scene_max_ops()) { return packet; }
+
+    let text_total: i32 = 0;
+    let i: i32 = 0;
+    while (i < scene.*.ops.len) {
+        let op: SceneOp = list.get[SceneOp](scene.*.ops, i);
+        if (gpu_packet_kind(op.kind) == 0 || text_total > scene_max_text_bytes() - op.content.len) {
+            packet.error_code = "E_GPU_PACKET_COMMAND";
+            return packet;
+        }
+        text_total = text_total + op.content.len;
+        i = i + 1;
+    }
+
+    // Header: magic, version, dimensions, command count, fixed record size,
+    // text offset, and text byte count. Every value is little-endian.
+    list.push[u8](&packet.bytes, 'Z' as u8);
+    list.push[u8](&packet.bytes, 'G' as u8);
+    list.push[u8](&packet.bytes, 'P' as u8);
+    list.push[u8](&packet.bytes, 'U' as u8);
+    gpu_packet_u32(&packet.bytes, 1);
+    gpu_packet_u32(&packet.bytes, scene.*.width as i64);
+    gpu_packet_u32(&packet.bytes, scene.*.height as i64);
+    gpu_packet_u32(&packet.bytes, scene.*.ops.len as i64);
+    gpu_packet_u32(&packet.bytes, 48);
+    gpu_packet_u32(&packet.bytes, (32 + scene.*.ops.len * 48) as i64);
+    gpu_packet_u32(&packet.bytes, text_total as i64);
+
+    let text_off: i32 = 0;
+    i = 0;
+    while (i < scene.*.ops.len) {
+        let op: SceneOp = list.get[SceneOp](scene.*.ops, i);
+        gpu_packet_u32(&packet.bytes, gpu_packet_kind(op.kind) as i64);
+        gpu_packet_u32(&packet.bytes, op.x as i64);
+        gpu_packet_u32(&packet.bytes, op.y as i64);
+        gpu_packet_u32(&packet.bytes, op.w as i64);
+        gpu_packet_u32(&packet.bytes, op.h as i64);
+        gpu_packet_u32(&packet.bytes, op.radius as i64);
+        gpu_packet_u32(&packet.bytes, op.scale as i64);
+        gpu_packet_u64(&packet.bytes, op.color);
+        gpu_packet_u32(&packet.bytes, text_off as i64);
+        gpu_packet_u32(&packet.bytes, op.content.len as i64);
+        gpu_packet_u32(&packet.bytes, 0);
+        text_off = text_off + op.content.len;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < scene.*.ops.len) {
+        let op: SceneOp = list.get[SceneOp](scene.*.ops, i);
+        let j: i32 = 0;
+        while (j < op.content.len) { list.push[u8](&packet.bytes, op.content[j]); j = j + 1; }
+        i = i + 1;
+    }
+    packet.command_count = scene.*.ops.len;
+    packet.text_bytes = text_total;
+    packet.ready = true;
+    packet.error_code = "";
+    return packet;
+}

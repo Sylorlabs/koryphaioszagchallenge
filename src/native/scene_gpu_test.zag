@@ -1,0 +1,38 @@
+@import("scene_gpu.zag")
+
+fn packet_eq(a: GpuScenePacket, b: GpuScenePacket) bool {
+    if (a.bytes.len != b.bytes.len) { return false; }
+    let i: i32 = 0;
+    while (i < a.bytes.len) {
+        if (a.bytes.data[i] != b.bytes.data[i]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn main() i32 {
+    let checks: i32 = 0;
+    let scene: Scene = scene_make(4);
+    if (!scene_begin(&scene, 1280, 720)) { return 1; }
+    let _a: bool = scene_fill_rect(&scene, 0, 0, 1280, 52, 1234);
+    let _b: bool = scene_text_max(&scene, 24, 20, "Koryphaios", 5678, 240);
+    let p1: GpuScenePacket = scene_gpu_encode(&scene);
+    let p2: GpuScenePacket = scene_gpu_encode(&scene);
+    if (!p1.ready || p1.error_code.len != 0 || p1.command_count != 2 || p1.text_bytes != 10) { return 2; }
+    checks = checks + 1;
+    if (p1.bytes.len != 32 + 2 * 48 + 10 || p1.bytes.data[0] != 'Z' as u8 || p1.bytes.data[3] != 'U' as u8) { return 3; }
+    checks = checks + 1;
+    if (!packet_eq(p1, p2)) { return 4; }
+    checks = checks + 1;
+
+    let rejected: Scene = scene_make(1);
+    let _bad: bool = scene_begin(&rejected, 0, 0);
+    let rp: GpuScenePacket = scene_gpu_encode(&rejected);
+    if (rp.ready || rp.error_code.len == 0) { return 5; }
+    checks = checks + 1;
+
+    _zag_print("GPU SCENE PACKET: ");
+    _zag_print(_zag_i64_to_str(checks as i64));
+    _zag_println(" checks, 0 failed");
+    return 0;
+}

@@ -1,0 +1,39 @@
+@import("gpu_drm.zag")
+
+fn main() i32 {
+    let checks:i32=0;
+    let missing:DrmProbe=drm_probe("/dev/dri/renderD999");
+    if(missing.ok||_zag_strcmp(missing.error_code,"E_DRM_OPEN")!=1){return 1;}
+    checks=checks+1;
+    let live:DrmProbe=drm_find_amdgpu();
+    if(!live.ok||_zag_strcmp(live.driver_name,"amdgpu")!=1){return 2;}
+    checks=checks+1;
+    if(live.version_major<=0||live.render_node.len==0){return 3;}
+    checks=checks+1;
+    let gfx:AmdgpuHwIp=amdgpu_hw_ip(live.render_node,0);
+    if(!gfx.ok||gfx.version_major!=10||gfx.available_rings<=0){return 4;}
+    checks=checks+1;
+    let compute:AmdgpuHwIp=amdgpu_hw_ip(live.render_node,1);
+    if(!compute.ok||compute.version_major!=10||compute.available_rings<=0){return 5;}
+    checks=checks+1;
+    if(amdgpu_hw_ip(live.render_node,9).ok){return 6;}
+    checks=checks+1;
+    let device:AmdgpuDeviceInfo=amdgpu_device_info(live.render_node);
+    if(!device.ok||device.device_id!=0x731F||device.wave_size!=32||device.active_cus<=0||device.va_max<=device.va_offset){return 9;}
+    checks=checks+1;
+    let gpuvm:AmdgpuGpuVmResult=amdgpu_gpuvm_roundtrip(live.render_node);
+    if(!gpuvm.ok||!gpuvm.mapped||!gpuvm.unmapped||!gpuvm.gem_closed){return 10;}
+    checks=checks+1;
+    let memory:AmdgpuMemoryResult=amdgpu_memory_roundtrip(live.render_node,4096);
+    if(!memory.ok||!memory.exact_readback||!memory.gem_closed){return 7;}
+    checks=checks+1;
+    if(amdgpu_memory_roundtrip(live.render_node,8192).ok){return 8;}
+    checks=checks+1;
+    _zag_print("DIRECT DRM DISCOVERY: ");_zag_print(_zag_i64_to_str(checks as i64));
+    _zag_print(" checks, 0 failed driver=amdgpu gfx=");
+    _zag_print(_zag_i64_to_str(gfx.version_major as i64));_zag_print(".");
+    _zag_print(_zag_i64_to_str(gfx.version_minor as i64));_zag_print(" drm=");
+    _zag_print(_zag_i64_to_str(live.version_major as i64));_zag_print(".");
+    _zag_print(_zag_i64_to_str(live.version_minor as i64));_zag_print(".");
+    _zag_println(_zag_i64_to_str(live.version_patchlevel as i64));return 0;
+}

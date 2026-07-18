@@ -273,3 +273,42 @@ fn store_append_message(st: *Store, sid: []u8, msg_obj: []u8) void {
     }
     util_write_atomic(path, sb_slice(&sb));
 }
+
+struct RegenerationCandidate {
+    prompt: []u8,
+    messages_without_assistant: []u8,
+}
+
+// Regeneration is valid only for an exact trailing user/assistant pair. The
+// caller starts the provider before committing this rewrite, so a spawn error
+// cannot destroy the previous answer.
+fn store_regeneration_candidate(st: *Store, sid: []u8) ?*RegenerationCandidate {
+    let raw: []u8 = store_messages_raw(st, sid);
+    let root: ?*JNode = json_parse(raw);
+    let count: i32 = json_arr_len(root);
+    if (count < 2) { return null; }
+    let user: ?*JNode = json_arr_at(root, count - 2);
+    let assistant: ?*JNode = json_arr_at(root, count - 1);
+    if (!str_eq(json_str(json_get(user, "role")), "user") ||
+        !str_eq(json_str(json_get(assistant, "role")), "assistant")) { return null; }
+    let prompt: []u8 = json_str(json_get(json_arr_at(json_get(user, "content"), 0), "text"));
+    if (prompt.len == 0) { return null; }
+
+    let out: StrBuf = sb_make();
+    sb_ch(&out, '[' as u8);
+    let i: i32 = 0;
+    while (i < count - 1) {
+        if (i > 0) { sb_ch(&out, ',' as u8); }
+        if (json_arr_at(root, i)) |message| { json_write_node(&out, message); }
+        i = i + 1;
+    }
+    sb_ch(&out, ']' as u8);
+    return new(RegenerationCandidate{
+        .prompt = _zag_strdup(prompt),
+        .messages_without_assistant = sb_slice(&out),
+    });
+}
+
+fn store_commit_regeneration(st: *Store, sid: []u8, candidate: *RegenerationCandidate) bool {
+    return util_write_atomic(store_messages_path(st, sid), candidate.*.messages_without_assistant);
+}

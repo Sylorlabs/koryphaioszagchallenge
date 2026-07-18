@@ -20,7 +20,7 @@ used for parity inventory.
 The work still required before release is deliberately documented in
 docs/RELEASE_STATUS.md and docs/PARITY_BASELINE.md. The repository now includes
 fail-closed X.509 leaf/trust-store preflight, authenticated encrypted-vault foundations,
-portable legacy session/message migration, static packaging, and headless
+portable legacy session/message migration, static ELF packaging, and headless
 performance gates. Cline and Codex are real direct-exec CLI adapters; Codex
 defaults to a read-only sandbox. Full trust-chain signatures, live Secret
 Service operations, full workflow/data migration, live AT-SPI object serving,
@@ -49,13 +49,20 @@ pinned as a Git submodule.
     ./verify.sh release
 
 The foundation gate must pass for every milestone. It includes strict build,
-core persistence/recovery, keyboard/pointer workflow, browser-boundary and
+typed-scene validation, deterministic CPU execution, and the Zag-owned GPU
+packet/compiler/virtual-runtime boundary, core
+persistence/recovery, keyboard/pointer workflow, browser-boundary and
 forbidden-marker audits, repository/source/secret/toolchain provenance policy,
 TLS/X.509 trust-store preflight, encrypted-secret storage, Codex/Cline adapter
 tests, accessibility semantics, portable migration, measured
 performance, four deterministic captures including HiDPI, and byte-identical
 capture comparison. The release gate intentionally fails closed
 while release-required capability evidence is unresolved.
+
+The native rendering boundary and accelerated `zag-gpu` direction are described
+in `docs/NATIVE_RENDERING.md`. Zag owns the complete userspace rendering and GPU
+stack. Physical backends talk directly to installed Linux kernel GPU drivers;
+Koryphaios does not depend on Vulkan, Mesa, libdrm, CUDA, or Level Zero.
 
 ## Provenance
 

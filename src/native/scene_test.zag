@@ -1,0 +1,75 @@
+@import("scene_fb.zag")
+
+fn check(name_: []u8, ok: bool, count: *i32, failed: *i32) void {
+    count.* = count.* + 1;
+    if (ok) { _zag_print("  ok  "); } else { _zag_print("  XX  "); failed.* = failed.* + 1; }
+    _zag_println(name_);
+}
+
+fn fb_equal(a: *FB, b: *FB) bool {
+    if (a.*.w != b.*.w || a.*.h != b.*.h || a.*.px.len != b.*.px.len) { return false; }
+    let i: i32 = 0;
+    while (i < a.*.px.len) {
+        if (a.*.px.data[i] != b.*.px.data[i]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn record_reference_scene(scene: *Scene) bool {
+    return scene_begin(scene, 96, 64) &&
+        scene_fill_rect(scene, 0, 0, 96, 64, rgb(13, 11, 10)) &&
+        scene_fill_rect(scene, 8, 8, 48, 24, rgb(38, 34, 32)) &&
+        scene_round_rect_outline(scene, 8, 8, 48, 24, 5, rgb(213, 178, 97)) &&
+        scene_text(scene, 12, 16, "Zag", rgb(239, 230, 215)) &&
+        scene_text_scaled(scene, 62, 8, "UI", rgb(229, 194, 108), 2) &&
+        scene_text_max(scene, 8, 44, "deterministic-scene", rgb(183, 172, 155), 72);
+}
+
+fn main() i32 {
+    let count: i32 = 0; let failed: i32 = 0;
+    let scene_a: Scene = scene_make(8);
+    let scene_b: Scene = scene_make(1);
+    check("typed scene records the reference command stream",
+        record_reference_scene(&scene_a) && scene_command_count(&scene_a) == 6,
+        &count, &failed);
+    check("scene storage grows without changing command count",
+        record_reference_scene(&scene_b) && scene_command_count(&scene_b) == 6,
+        &count, &failed);
+
+    let fb_a: FB = fb_new(96, 64);
+    let fb_b: FB = fb_new(96, 64);
+    check("framebuffer backend executes a validated scene",
+        scene_fb_execute(&scene_a, &fb_a) && scene_fb_execute(&scene_b, &fb_b),
+        &count, &failed);
+    check("identical scenes produce byte-identical pixels", fb_equal(&fb_a, &fb_b), &count, &failed);
+    check("scene drawing reaches expected background and panel pixels",
+        fb_a.px.data[0] == rgb(13, 11, 10) && fb_a.px.data[20 * 96 + 30] == rgb(38, 34, 32),
+        &count, &failed);
+
+    let invalid: Scene = scene_make(1);
+    check("commands before begin fail closed",
+        !scene_fill_rect(&invalid, 0, 0, 1, 1, rgb(0, 0, 0)) && invalid.rejected &&
+        _zag_strcmp(invalid.error_code, "E_SCENE_NOT_BEGUN") == 1,
+        &count, &failed);
+    check("begin clears a prior rejection",
+        scene_begin(&invalid, 32, 32) && !invalid.rejected && invalid.error_code.len == 0,
+        &count, &failed);
+    check("invalid geometry poisons the scene with a stable error",
+        !scene_fill_rect(&invalid, 0, 0, 0, 8, rgb(0, 0, 0)) && invalid.rejected &&
+        _zag_strcmp(invalid.error_code, "E_SCENE_RECT") == 1,
+        &count, &failed);
+    check("rejected scenes never execute", !scene_fb_execute(&invalid, &fb_a), &count, &failed);
+
+    let mismatch: Scene = scene_make(1);
+    let small: FB = fb_new(31, 32);
+    check("backend rejects a viewport mismatch",
+        scene_begin(&mismatch, 32, 32) &&
+        scene_fill_rect(&mismatch, 0, 0, 32, 32, rgb(1, 2, 3)) &&
+        !scene_fb_execute(&mismatch, &small),
+        &count, &failed);
+
+    _zag_print("NATIVE SCENE: "); _zag_print(_zag_i64_to_str(count as i64));
+    _zag_print(" checks, "); _zag_print(_zag_i64_to_str(failed as i64)); _zag_println(" failed");
+    if (failed == 0) { return 0; } return 1;
+}

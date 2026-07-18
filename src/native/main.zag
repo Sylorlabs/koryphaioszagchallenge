@@ -1,7 +1,9 @@
 // Koryphaios native desktop entry point.
 // No HTTP server, browser renderer, WebView, REST client, or WebSocket UI.
 
-@import("fb.zag")
+@import("scene_fb.zag")
+@import("scene_gpu.zag")
+@import("gpu_zag.zag")
 @import("x11.zag")
 @import("core.zag")
 @import("migration.zag")
@@ -9,6 +11,8 @@
 
 struct NativeUi {
     core: *AppCore,
+    scene: Scene,
+    gpu: ZagGpuStatus,
     composer: []u8,
     composer_focused: bool,
     palette_open: bool,
@@ -57,6 +61,8 @@ fn data_dir_from_args() []u8 {
 fn ui_new(core: *AppCore, safe_mode: bool) *NativeUi {
     return new(NativeUi{
         .core = core,
+        .scene = scene_make(512),
+        .gpu = zag_gpu_status(),
         .composer = "",
         .composer_focused = true,
         .palette_open = false,
@@ -159,6 +165,11 @@ fn ui_send(ui: *NativeUi) void {
     if (ui_command(ui, cmd)) { ui.*.composer = ""; }
 }
 
+fn ui_regenerate(ui: *NativeUi) void {
+    let cmd: AppCommand = core_command(AppCommandKind.message_regenerate, ui.*.core.*.active_session_id, "");
+    let _ok: bool = ui_command(ui, cmd);
+}
+
 fn ui_refresh_providers(ui: *NativeUi) void {
     let cmd: AppCommand = core_command(AppCommandKind.provider_refresh, "", "");
     let _ok: bool = ui_command(ui, cmd);
@@ -216,6 +227,7 @@ fn ui_key(ui: *NativeUi, code: i32, mods: i32) void {
     }
     if (ctrl && code == 'm') { ui_open_knowledge(ui, 1); return; }
     if (ctrl && code == 'r') { ui_open_knowledge(ui, 2); return; }
+    if (ctrl && code == 'g') { ui_regenerate(ui); return; }
     if (ctrl && code == 's' && ui.*.knowledge_mode > 0) { ui_save_knowledge(ui); return; }
     if (ui.*.delete_confirm_sid.len > 0) {
         if (code == 27) { ui.*.delete_confirm_sid = ""; }
@@ -291,9 +303,9 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
         return;
     }
     if (ui.*.settings_open) {
-        if (mx >= 292 && mx < 620 && my >= 128 && my < 158) { ui_toggle_always_create(ui); }
-        else if (my >= 272) {
-            let idx: i32 = (my - 272) / 25;
+        if (mx >= 292 && mx < 620 && my >= 220 && my < 250) { ui_toggle_always_create(ui); }
+        else if (my >= 360) {
+            let idx: i32 = (my - 360) / 25;
             if (idx >= 0) {
                 if (provider_filtered_at(ui, idx)) |provider| { ui_select_provider(ui, provider); }
             }
@@ -301,16 +313,16 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
         return;
     }
     if (ui.*.palette_open) { return; }
-    if (mx >= 14 && mx < 234 && my >= 80 && my < 108) {
+    if (mx >= 220 && mx < 268 && my >= 54 && my < 88) {
         ui_new_session(ui, false);
         return;
     }
-    if (mx >= 14 && mx < 234 && my >= 116 && my < h - 48) {
-        let idx: i32 = (my - 116) / 36;
+    if (mx >= 10 && mx < 262 && my >= 164 && my < h - 64) {
+        let idx: i32 = (my - 164) / 58;
         if (idx >= 0 && idx < ui.*.core.*.store.*.sessions.len) {
             let session: *Session = list.get[*Session](ui.*.core.*.store.*.sessions, idx);
-            if (mx >= 204) { ui_request_delete(ui, session.*.id); }
-            else if (mx >= 174) { ui_begin_rename(ui, session); }
+            if (mx >= 228) { ui_request_delete(ui, session.*.id); }
+            else if (mx >= 196) { ui_begin_rename(ui, session); }
             else {
                 let cmd: AppCommand = core_command(AppCommandKind.session_select, session.*.id, "");
                 let _ok: bool = ui_command(ui, cmd);
@@ -318,8 +330,26 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
         }
         return;
     }
-    if (mx >= 290 && mx < w - 40 && my >= h - 104 && my < h - 60) {
+    if (w >= 900 && h >= 560 && my >= 250 && my < 426 && mx >= 336 && mx < w - 64) {
+        let card_w: i32 = (w - 320 - 80 - 12) / 2;
+        let card_x: i32 = 336;
+        let col: i32 = 0;
+        if (mx >= card_x + card_w + 12) { col = 1; }
+        let row: i32 = 0;
+        if (my >= 344) { row = 1; }
+        if (row == 0 && col == 0) { ui.*.composer = "Build a polished native Zag UI component"; }
+        if (row == 0 && col == 1) { ui.*.composer = "Debug this issue and verify the full runtime flow"; }
+        if (row == 1 && col == 0) { ui.*.composer = "Refactor the hot path for measured performance"; }
+        if (row == 1 && col == 1) { ui.*.composer = "Write deterministic verification for this feature"; }
         ui.*.composer_focused = true;
+        return;
+    }
+    if (mx >= 296 && mx < w - 132 && my >= h - 84 && my < h - 30) {
+        ui.*.composer_focused = true;
+        return;
+    }
+    if (mx >= w - 120 && mx < w - 24 && my >= h - 84 && my < h - 30) {
+        ui_send(ui);
         return;
     }
     if (mx >= w - 136 && mx < w - 18 && my >= 8 && my < 34) {
@@ -328,99 +358,195 @@ fn ui_pointer(ui: *NativeUi, mx: i32, my: i32, btn: i32, w: i32, h: i32) void {
     }
 }
 
-fn draw_button(f: *FB, x: i32, y: i32, w: i32, label: []u8, active: bool) void {
+fn draw_button(scene: *Scene, x: i32, y: i32, w: i32, label: []u8, active: bool) void {
     let bg: i64 = rgb(38, 34, 32);
     if (active) { bg = rgb(82, 66, 38); }
-    fill_rect(f, x, y, w, 28, bg);
-    round_rect_outline(f, x, y, w, 28, 5, rgb(110, 92, 57));
-    draw_text_max(f, x + 10, y + 10, label, rgb(235, 226, 208), w - 18);
+    let _bg: bool = scene_fill_rect(scene, x, y, w, 28, bg);
+    let _outline: bool = scene_round_rect_outline(scene, x, y, w, 28, 5, rgb(110, 92, 57));
+    let _label: bool = scene_text_max(scene, x + 10, y + 10, label, rgb(235, 226, 208), w - 18);
 }
 
-fn draw_sessions(f: *FB, ui: *NativeUi, h: i32) void {
-    draw_text(f, 18, 62, "SESSIONS", rgb(183, 172, 155));
-    draw_button(f, 14, 80, 220, "+ New session", false);
+fn draw_sessions(scene: *Scene, ui: *NativeUi, h: i32) void {
+    let _title: bool = scene_text(scene, 16, 70, "SESSIONS", rgb(183, 172, 155));
+    let _new: bool = scene_text(scene, 230, 70, "+ NEW", rgb(213, 178, 97));
+    let _search_bg: bool = scene_fill_rect(scene, 12, 92, 248, 36, rgb(13, 11, 10));
+    let _search_outline: bool = scene_round_rect_outline(scene, 12, 92, 248, 36, 8, rgb(62, 53, 47));
+    let _search_icon: bool = scene_text(scene, 24, 106, "?", rgb(139, 129, 116));
+    let _search: bool = scene_text(scene, 42, 106, "Search sessions", rgb(139, 129, 116));
+    let _week: bool = scene_text(scene, 16, 146, "RECENT", rgb(110, 101, 91));
     let i: i32 = 0;
-    while (i < ui.*.core.*.store.*.sessions.len && 116 + i * 36 < h - 48) {
+    while (i < ui.*.core.*.store.*.sessions.len && 164 + i * 58 < h - 64) {
         let session: *Session = list.get[*Session](ui.*.core.*.store.*.sessions, i);
-        draw_button(f, 14, 116 + i * 36, 160, session.*.title,
-            str_eq(session.*.id, ui.*.core.*.active_session_id));
-        draw_button(f, 174, 116 + i * 36, 30, "R", false);
-        draw_button(f, 204, 116 + i * 36, 30, "X", false);
+        let sy: i32 = 164 + i * 58;
+        let active: bool = str_eq(session.*.id, ui.*.core.*.active_session_id);
+        let card_bg: i64 = rgb(20, 18, 16);
+        if (active) { card_bg = rgb(48, 43, 40); }
+        let _card: bool = scene_fill_rect(scene, 10, sy, 252, 50, card_bg);
+        if (active) {
+            let _accent: bool = scene_fill_rect(scene, 10, sy, 3, 50, rgb(213, 178, 97));
+            let _card_outline: bool = scene_round_rect_outline(scene, 10, sy, 252, 50, 8, rgb(110, 92, 57));
+        }
+        let _bubble: bool = scene_text(scene, 24, sy + 14, "[]", rgb(139, 129, 116));
+        let _session: bool = scene_text_max(scene, 48, sy + 12, session.*.title, rgb(235, 226, 208), 142);
+        let count_label: []u8 = _zag_str_concat(_zag_i64_to_str(session.*.message_count), " messages");
+        let _count: bool = scene_text(scene, 48, sy + 30, count_label, rgb(110, 101, 91));
+        if (active) {
+            let _rename: bool = scene_text(scene, 202, sy + 12, "F2", rgb(183, 172, 155));
+            let _delete: bool = scene_text(scene, 232, sy + 12, "X", rgb(235, 130, 110));
+        }
         i = i + 1;
     }
+    let _footer_line: bool = scene_fill_rect(scene, 0, h - 48, 272, 1, rgb(48, 42, 37));
+    let _ready_dot: bool = scene_fill_rect(scene, 14, h - 26, 6, 6, rgb(34, 197, 94));
+    let footer: []u8 = "Zag GPU packet / CPU oracle";
+    if (ui.*.gpu.memory_only_ready) { footer = "Zag direct DRM memory / CPU oracle"; }
+    if (ui.*.gpu.physical_gfx1010_ready) { footer = "Zag GPU GFX10.1 / direct DRM"; }
+    let _footer: bool = scene_text(scene, 28, h - 28, footer, rgb(139, 129, 116));
 }
 
-fn draw_feed(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
-    draw_text_scaled(f, 290, 80, "Koryphaios", rgb(239, 230, 215), 2);
-    if (ui.*.core.*.active_session_id.len == 0) {
-        draw_text(f, 290, 126, "Create a session to begin.", rgb(204, 192, 175));
+fn draw_starter_card(scene: *Scene, x: i32, y: i32, w: i32,
+                     title: []u8, detail: []u8, mark: []u8) void {
+    let _bg: bool = scene_fill_rect(scene, x, y, w, 82, rgb(28, 25, 23));
+    let _outline: bool = scene_round_rect_outline(scene, x, y, w, 82, 10, rgb(62, 53, 47));
+    let _mark_bg: bool = scene_fill_rect(scene, x + 14, y + 14, 28, 28, rgb(38, 34, 32));
+    let _mark_outline: bool = scene_round_rect_outline(scene, x + 14, y + 14, 28, 28, 7, rgb(62, 53, 47));
+    let _mark: bool = scene_text(scene, x + 24, y + 24, mark, rgb(213, 178, 97));
+    let _title: bool = scene_text_max(scene, x + 54, y + 18, title, rgb(246, 239, 226), w - 68);
+    let _detail: bool = scene_text_max(scene, x + 54, y + 44, detail, rgb(139, 129, 116), w - 68);
+}
+
+fn draw_feed(scene: *Scene, ui: *NativeUi, w: i32, h: i32) void {
+    let left: i32 = 296;
+    let right: i32 = w - 24;
+    let content_w: i32 = right - left;
+    let _feed_bar: bool = scene_fill_rect(scene, 272, 52, w - 272, 36, rgb(20, 18, 16));
+    let _feed_line: bool = scene_fill_rect(scene, 272, 87, w - 272, 1, rgb(48, 42, 37));
+    let _feed: bool = scene_text(scene, left, 66, "[]  AGENT FEED", rgb(183, 172, 155));
+    let _workspace: bool = scene_text(scene, w - 142, 66, "LOCAL / ZAG", rgb(110, 101, 91));
+
+    let empty_session: bool = true;
+    if (store_find(ui.*.core.*.store, ui.*.core.*.active_session_id)) |active| {
+        if (active.*.message_count > 0) { empty_session = false; }
+    }
+    if (empty_session && w >= 900 && h >= 560) {
+        let center: i32 = left + content_w / 2;
+        let title: []u8 = "Ready for your request";
+        let _orb: bool = scene_round_rect_outline(scene, center - 24, 112, 48, 48, 12, rgb(213, 178, 97));
+        let _orb_mark: bool = scene_text_scaled(scene, center - 12, 127, ">_", rgb(213, 178, 97), 2);
+        let _welcome: bool = scene_text_scaled(scene, center - (title.len * 6), 180, title, rgb(246, 239, 226), 2);
+        let subtitle: []u8 = "Build, debug, refactor, and coordinate agents without leaving the native workspace.";
+        let _subtitle: bool = scene_text(scene, center - (subtitle.len * 3), 214, subtitle, rgb(139, 129, 116));
+        let gap: i32 = 12;
+        let card_w: i32 = (content_w - 80 - gap) / 2;
+        let card_x: i32 = left + 40;
+        draw_starter_card(scene, card_x, 250, card_w, "Build a native UI component",
+            "Create a polished Zag-first interface", "+");
+        draw_starter_card(scene, card_x + card_w + gap, 250, card_w, "Debug an issue",
+            "Trace runtime truth and fix the source", "!");
+        draw_starter_card(scene, card_x, 344, card_w, "Refactor for performance",
+            "Measure first, then remove hot-path cost", ">");
+        draw_starter_card(scene, card_x + card_w + gap, 344, card_w, "Write verification",
+            "Add deterministic gates for the full flow", "=");
     } else {
-        draw_text(f, 290, 126, "Native session active", rgb(204, 192, 175));
+        let start: i32 = 0;
+        if (ui.*.core.*.events.len > 8) { start = ui.*.core.*.events.len - 8; }
+        let i: i32 = start;
+        let y: i32 = 112;
+        while (i < ui.*.core.*.events.len && y < h - 190) {
+            let event: *AppEvent = list.get[*AppEvent](ui.*.core.*.events, i);
+            let prefix: []u8 = "EVENT";
+            let detail: []u8 = event.*.payload;
+            let accent: i64 = rgb(110, 92, 57);
+            if (event.*.kind == AppEventKind.message_added) { prefix = "YOU"; accent = rgb(59, 130, 246); }
+            if (event.*.kind == AppEventKind.stream_delta || event.*.kind == AppEventKind.assistant_added) { prefix = "KORY"; accent = rgb(213, 178, 97); }
+            if (event.*.kind == AppEventKind.message_regenerated) { prefix = "RETRY"; }
+            if (event.*.kind == AppEventKind.agent_status) { prefix = "AGENT"; accent = rgb(34, 197, 94); }
+            if (event.*.kind == AppEventKind.command_rejected) { prefix = "ERROR"; accent = rgb(239, 68, 68); }
+            if (event.*.kind == AppEventKind.session_changed) { prefix = "SESSION"; }
+            if (event.*.kind == AppEventKind.session_deleted) { prefix = "DELETED"; detail = "session removed"; }
+            if (event.*.kind == AppEventKind.setting_changed) { prefix = "SETTING"; }
+            if (event.*.kind == AppEventKind.knowledge_changed) { prefix = "KNOWLEDGE"; }
+            let _event_bg: bool = scene_fill_rect(scene, left, y, content_w, 42, rgb(20, 18, 16));
+            let _event_accent: bool = scene_fill_rect(scene, left, y, 3, 42, accent);
+            let _event_prefix: bool = scene_text(scene, left + 16, y + 12, prefix, accent);
+            let _event: bool = scene_text_max(scene, left + 96, y + 12, detail, rgb(204, 192, 175), content_w - 112);
+            y = y + 50;
+            i = i + 1;
+        }
     }
-    let start: i32 = 0;
-    if (ui.*.core.*.events.len > 6) { start = ui.*.core.*.events.len - 6; }
-    let i: i32 = start;
-    let y: i32 = 170;
-    while (i < ui.*.core.*.events.len && y < h - 150) {
-        let event: *AppEvent = list.get[*AppEvent](ui.*.core.*.events, i);
-        let prefix: []u8 = "event";
-        let detail: []u8 = event.*.payload;
-        if (event.*.kind == AppEventKind.message_added) { prefix = "you"; }
-        if (event.*.kind == AppEventKind.stream_delta) { prefix = "Kory"; }
-        if (event.*.kind == AppEventKind.assistant_added) { prefix = "assistant"; }
-        if (event.*.kind == AppEventKind.agent_status) { prefix = "agent"; }
-        if (event.*.kind == AppEventKind.command_rejected) { prefix = "error"; }
-        if (event.*.kind == AppEventKind.session_changed) { prefix = "session"; }
-        if (event.*.kind == AppEventKind.session_deleted) { prefix = "deleted"; detail = "session removed"; }
-        if (event.*.kind == AppEventKind.setting_changed) { prefix = "setting"; }
-        if (event.*.kind == AppEventKind.knowledge_changed) { prefix = "knowledge"; }
-        draw_text(f, 290, y, _zag_str_concat(prefix, _zag_str_concat(": ", detail)), rgb(204, 192, 175));
-        y = y + 28;
-        i = i + 1;
+
+    let composer_top: i32 = h - 172;
+    let _composer_surface: bool = scene_fill_rect(scene, 272, composer_top, w - 272, 172, rgb(20, 18, 16));
+    let _composer_line: bool = scene_fill_rect(scene, 272, composer_top, w - 272, 1, rgb(48, 42, 37));
+    if (!core_can_send(ui.*.core)) {
+        let _error_bg: bool = scene_fill_rect(scene, left, composer_top + 12, content_w, 30, rgb(58, 24, 24));
+        let _error_outline: bool = scene_round_rect_outline(scene, left, composer_top + 12, content_w, 30, 6, rgb(132, 45, 45));
+        let _setup: bool = scene_text_max(scene, left + 12, composer_top + 23,
+            "Provider setup required - choose an available executable in Settings", rgb(246, 173, 158), content_w - 24);
     }
-    fill_rect(f, 290, h - 104, w - 330, 44, rgb(35, 31, 29));
-    let composer_border: i64 = rgb(110, 92, 57);
+    draw_button(scene, left, composer_top + 50, 96, "AUTO", true);
+    draw_button(scene, left + 106, composer_top + 50, 112, "MEDIUM", false);
+    let send_w: i32 = 96;
+    let input_w: i32 = content_w - send_w - 12;
+    let _composer_bg: bool = scene_fill_rect(scene, left, composer_top + 88, input_w, 54, rgb(13, 11, 10));
+    let composer_border: i64 = rgb(62, 53, 47);
     if (ui.*.composer_focused) { composer_border = rgb(213, 178, 97); }
-    round_rect_outline(f, 290, h - 104, w - 330, 44, 6, composer_border);
+    let _composer_outline: bool = scene_round_rect_outline(scene, left, composer_top + 88, input_w, 54, 9, composer_border);
     let prompt: []u8 = ui.*.composer;
     if (prompt.len == 0) {
         if (ui.*.rename_mode) { prompt = "Enter a session title"; }
-        else { prompt = "Message Koryphaios"; }
+        else { prompt = "Describe what you want to build..."; }
     }
-    draw_text_max(f, 304, h - 84, prompt, rgb(204, 192, 175), w - 380);
-    if (!core_can_send(ui.*.core)) {
-        draw_text_max(f, 290, h - 126, "Setup required: connect an executable provider before sending.", rgb(235, 130, 110), w - 330);
-    }
+    let _prompt: bool = scene_text_max(scene, left + 16, composer_top + 109, prompt, rgb(204, 192, 175), input_w - 32);
+    let _send_bg: bool = scene_fill_rect(scene, right - send_w, composer_top + 88, send_w, 54, rgb(82, 66, 38));
+    let _send_outline: bool = scene_round_rect_outline(scene, right - send_w, composer_top + 88, send_w, 54, 9, rgb(110, 92, 57));
+    let _send: bool = scene_text(scene, right - 70, composer_top + 109, "SEND >", rgb(246, 239, 226));
     if (ui.*.last_error.len > 0) {
-        draw_text_max(f, 290, h - 44, ui.*.last_error, rgb(235, 130, 110), w - 330);
+        let _error: bool = scene_text_max(scene, left, h - 18, ui.*.last_error, rgb(235, 130, 110), content_w);
     } else {
-        if (ui.*.rename_mode) {
-            draw_text(f, 290, h - 44, "Rename mode: Enter saves, Escape cancels", rgb(213, 178, 97));
-        } else {
-            draw_text(f, 290, h - 44, "Enter sends  |  exact usage appears only when provider-reported", rgb(139, 129, 116));
-        }
+        let _help: bool = scene_text(scene, left, h - 18,
+            "Enter to send  /  Ctrl+G regenerate  /  exact provider usage only", rgb(110, 101, 91));
     }
 }
 
-fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
-    fill_rect(f, 270, 58, w - 310, h - 106, rgb(28, 25, 23));
-    round_rect_outline(f, 270, 58, w - 310, h - 106, 8, rgb(110, 92, 57));
-    draw_text_scaled(f, 292, 82, "Settings", rgb(239, 230, 215), 2);
-    draw_text(f, 292, 116, "SESSION BEHAVIOR", rgb(183, 172, 155));
+fn draw_settings(scene: *Scene, ui: *NativeUi, w: i32, h: i32) void {
+    let _panel: bool = scene_fill_rect(scene, 270, 58, w - 310, h - 106, rgb(28, 25, 23));
+    let _panel_outline: bool = scene_round_rect_outline(scene, 270, 58, w - 310, h - 106, 8, rgb(110, 92, 57));
+    let _title: bool = scene_text_scaled(scene, 292, 82, "Settings", rgb(239, 230, 215), 2);
+    let _gpu_heading: bool = scene_text(scene, 292, 118, "ZAG GPU STACK", rgb(183, 172, 155));
+    let gpu_label: []u8 = _zag_str_concat("Target: ",
+        _zag_str_concat(ui.*.gpu.target, _zag_str_concat(" / ", ui.*.gpu.kernel_abi)));
+    if (ui.*.gpu.kernel_uapi_discovery_ready) {
+        gpu_label = _zag_str_concat(gpu_label,
+            _zag_str_concat(" / ", _zag_str_concat(ui.*.gpu.driver_name,
+            _zag_str_concat(" / GFX", _zag_i64_to_str(ui.*.gpu.gfx_ip_major as i64)))));
+    }
+    let gpu_color: i64 = rgb(235, 185, 103);
+    if (ui.*.gpu.physical_gfx1010_ready) { gpu_color = rgb(118, 201, 151); }
+    let _gpu: bool = scene_text_max(scene, 292, 138, gpu_label, gpu_color, w - 350);
+    let virtual_label: []u8 = "Compiler + strict GFX10 VM: READY";
+    let _virtual: bool = scene_text(scene, 292, 158, virtual_label, rgb(118, 201, 151));
+    let memory_label: []u8 = "Direct DRM discovery + memory tier: UNAVAILABLE";
+    if (ui.*.gpu.memory_only_ready) { memory_label = "Direct DRM discovery + memory tier: VERIFIED"; }
+    let _memory: bool = scene_text(scene, 292, 176, memory_label, gpu_color);
+    let _physical: bool = scene_text(scene, 292, 194,
+        "Shader submission: LOCKED (no physical execution claim)", rgb(235, 185, 103));
+    let _session_label: bool = scene_text(scene, 292, 212, "SESSION BEHAVIOR", rgb(183, 172, 155));
     let reuse_label: []u8 = "Reuse untouched session: ON";
     if (ui.*.core.*.always_create_session) { reuse_label = "Always create new session: ON"; }
-    draw_button(f, 292, 128, 328, reuse_label, ui.*.core.*.always_create_session);
-    draw_text(f, 632, 146, "Ctrl+A toggles", rgb(139, 129, 116));
-    draw_text_scaled(f, 292, 182, "Providers", rgb(239, 230, 215), 2);
-    draw_text(f, 292, 216, "Distinct identities; CLI availability comes from executable PATH checks.", rgb(183, 172, 155));
-    fill_rect(f, 292, 230, 328, 30, rgb(35, 31, 29));
-    round_rect_outline(f, 292, 230, 328, 30, 5, rgb(213, 178, 97));
+    draw_button(scene, 292, 220, 328, reuse_label, ui.*.core.*.always_create_session);
+    let _toggle_help: bool = scene_text(scene, 632, 238, "Ctrl+A toggles", rgb(139, 129, 116));
+    let _providers: bool = scene_text_scaled(scene, 292, 270, "Providers", rgb(239, 230, 215), 2);
+    let _provider_help: bool = scene_text(scene, 292, 304,
+        "Distinct identities; CLI availability comes from executable PATH checks.", rgb(183, 172, 155));
+    let _search_bg: bool = scene_fill_rect(scene, 292, 318, 328, 30, rgb(35, 31, 29));
+    let _search_outline: bool = scene_round_rect_outline(scene, 292, 318, 328, 30, 5, rgb(213, 178, 97));
     let search_label: []u8 = ui.*.provider_query;
     if (search_label.len == 0) { search_label = "Search providers and transports"; }
-    draw_text_max(f, 302, 244, search_label, rgb(204, 192, 175), 308);
+    let _search: bool = scene_text_max(scene, 302, 332, search_label, rgb(204, 192, 175), 308);
     let i: i32 = 0;
     let shown: i32 = 0;
-    while (i < ui.*.core.*.providers.len && 272 + shown * 25 < h - 68) {
+    while (i < ui.*.core.*.providers.len && 360 + shown * 25 < h - 68) {
         let provider: *ProviderIdentity = list.get[*ProviderIdentity](ui.*.core.*.providers, i);
         if (provider_matches(ui, provider)) {
             let state: []u8 = "unavailable";
@@ -428,7 +554,7 @@ fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
             if (provider.*.available && (str_eq(provider.*.id, "cline") || str_eq(provider.*.id, "codex")) &&
                 !provider.*.authenticated) { state = "auth required"; }
             if (str_eq(provider.*.id, ui.*.core.*.selected_provider_id)) { state = "SELECTED"; }
-            draw_text(f, 292, 272 + shown * 25,
+            let _provider: bool = scene_text(scene, 292, 360 + shown * 25,
                 _zag_str_concat(provider.*.name_, _zag_str_concat("  [", _zag_str_concat(provider.*.transport, _zag_str_concat("]  ", state)))),
                 rgb(204, 192, 175));
             shown = shown + 1;
@@ -437,55 +563,83 @@ fn draw_settings(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
     }
 }
 
-fn draw_palette(f: *FB, w: i32) void {
-    fill_rect(f, w / 2 - 260, 92, 520, 130, rgb(28, 25, 23));
-    round_rect_outline(f, w / 2 - 260, 92, 520, 130, 8, rgb(213, 178, 97));
-    draw_text_scaled(f, w / 2 - 238, 116, "Command palette", rgb(239, 230, 215), 2);
-    draw_text(f, w / 2 - 238, 158, "Ctrl+N  New session", rgb(204, 192, 175));
-    draw_text(f, w / 2 - 238, 184, "Ctrl+Shift+N force new  |  F2 rename  |  Ctrl+Del delete", rgb(204, 192, 175));
+fn draw_palette(scene: *Scene, w: i32) void {
+    let _panel: bool = scene_fill_rect(scene, w / 2 - 260, 92, 520, 130, rgb(28, 25, 23));
+    let _outline: bool = scene_round_rect_outline(scene, w / 2 - 260, 92, 520, 130, 8, rgb(213, 178, 97));
+    let _title: bool = scene_text_scaled(scene, w / 2 - 238, 116, "Command palette", rgb(239, 230, 215), 2);
+    let _new_session: bool = scene_text(scene, w / 2 - 238, 158, "Ctrl+N  New session", rgb(204, 192, 175));
+    let _commands: bool = scene_text(scene, w / 2 - 238, 184,
+        "Ctrl+Shift+N force new  |  F2 rename  |  Ctrl+Del delete", rgb(204, 192, 175));
 }
 
-fn draw_delete_confirmation(f: *FB, w: i32, h: i32) void {
-    fill_rect(f, w / 2 - 190, h / 2 - 72, 380, 144, rgb(28, 25, 23));
-    round_rect_outline(f, w / 2 - 190, h / 2 - 72, 380, 144, 8, rgb(190, 91, 73));
-    draw_text_scaled(f, w / 2 - 166, h / 2 - 44, "Delete session?", rgb(239, 230, 215), 2);
-    draw_text(f, w / 2 - 166, h / 2 - 8, "Messages will be removed from local storage.", rgb(204, 192, 175));
-    draw_button(f, w / 2 - 126, h / 2 + 24, 116, "Cancel", false);
-    draw_button(f, w / 2 + 10, h / 2 + 24, 116, "Delete", true);
+fn draw_delete_confirmation(scene: *Scene, w: i32, h: i32) void {
+    let _panel: bool = scene_fill_rect(scene, w / 2 - 190, h / 2 - 72, 380, 144, rgb(28, 25, 23));
+    let _outline: bool = scene_round_rect_outline(scene, w / 2 - 190, h / 2 - 72, 380, 144, 8, rgb(190, 91, 73));
+    let _title: bool = scene_text_scaled(scene, w / 2 - 166, h / 2 - 44, "Delete session?", rgb(239, 230, 215), 2);
+    let _detail: bool = scene_text(scene, w / 2 - 166, h / 2 - 8,
+        "Messages will be removed from local storage.", rgb(204, 192, 175));
+    draw_button(scene, w / 2 - 126, h / 2 + 24, 116, "Cancel", false);
+    draw_button(scene, w / 2 + 10, h / 2 + 24, 116, "Delete", true);
 }
 
-fn draw_knowledge_editor(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
-    fill_rect(f, 270, 58, w - 310, h - 190, rgb(28, 25, 23));
-    round_rect_outline(f, 270, 58, w - 310, h - 190, 8, rgb(110, 92, 57));
+fn draw_knowledge_editor(scene: *Scene, ui: *NativeUi, w: i32, h: i32) void {
+    let _panel: bool = scene_fill_rect(scene, 270, 58, w - 310, h - 190, rgb(28, 25, 23));
+    let _outline: bool = scene_round_rect_outline(scene, 270, 58, w - 310, h - 190, 8, rgb(110, 92, 57));
     let title: []u8 = "Project memory Markdown";
     if (ui.*.knowledge_mode == 2) { title = "Project rules Markdown"; }
-    draw_text_scaled(f, 292, 82, title, rgb(239, 230, 215), 2);
-    draw_text(f, 292, 118, "Authoritative file - Ctrl+S saves atomically - Escape closes", rgb(183, 172, 155));
-    draw_text_max(f, 292, 154, ui.*.composer, rgb(204, 192, 175), w - 350);
+    let _title: bool = scene_text_scaled(scene, 292, 82, title, rgb(239, 230, 215), 2);
+    let _help: bool = scene_text(scene, 292, 118,
+        "Authoritative file - Ctrl+S saves atomically - Escape closes", rgb(183, 172, 155));
+    let _content: bool = scene_text_max(scene, 292, 154, ui.*.composer, rgb(204, 192, 175), w - 350);
+}
+
+fn record_ui_scene(scene: *Scene, ui: *NativeUi, w: i32, h: i32) void {
+    let _background: bool = scene_fill_rect(scene, 0, 0, w, h, rgb(13, 11, 10));
+    if (w < 640 || h < 360) {
+        let _small_title: bool = scene_text_scaled(scene, 24, 28, "Koryphaios", rgb(239, 230, 215), 2);
+        let _small_help: bool = scene_text(scene, 24, 68,
+            "Enlarge the window to at least 640 x 360.", rgb(235, 185, 103));
+        return;
+    }
+    let _toolbar: bool = scene_fill_rect(scene, 0, 0, w, 52, rgb(20, 18, 16));
+    let _toolbar_line: bool = scene_fill_rect(scene, 0, 51, w, 1, rgb(48, 42, 37));
+    let _brand_mark: bool = scene_round_rect_outline(scene, 14, 10, 32, 32, 8, rgb(110, 92, 57));
+    let _brand_orb: bool = scene_text(scene, 25, 22, "*", rgb(213, 178, 97));
+    let _brand: bool = scene_text_scaled(scene, 56, 14, "Koryphaios", rgb(239, 230, 215), 2);
+    let _native: bool = scene_text(scene, 58, 36, "NATIVE ZAG", rgb(110, 101, 91));
+    if (ui.*.safe_mode) {
+        let _safe_mode: bool = scene_text(scene, w - 250, 22, "SAFE MODE", rgb(235, 185, 103));
+    }
+    draw_button(scene, w - 136, 12, 118, "Providers", ui.*.settings_open);
+    let _sidebar: bool = scene_fill_rect(scene, 0, 52, 272, h - 52, rgb(20, 18, 16));
+    let _sidebar_line: bool = scene_fill_rect(scene, 271, 52, 1, h - 52, rgb(48, 42, 37));
+    draw_sessions(scene, ui, h);
+    let _workspace: bool = scene_fill_rect(scene, 272, 52, w - 272, h - 52, rgb(13, 11, 10));
+    if (!ui.*.core.*.ready) {
+        let _recovery: bool = scene_text_scaled(scene, 290, 94, "Startup recovery", rgb(235, 185, 103), 2);
+        let _readiness: bool = scene_text(scene, 290, 138,
+            "Core readiness failed. No partial workspace is shown.", rgb(236, 223, 207));
+        let _error: bool = scene_text(scene, 290, 176, ui.*.core.*.error_code, rgb(235, 130, 110));
+        let _backup: bool = scene_text(scene, 290, 214,
+            "The invalid schema was backed up for diagnostics.", rgb(183, 172, 155));
+        return;
+    }
+    draw_feed(scene, ui, w, h);
+    if (ui.*.settings_open) { draw_settings(scene, ui, w, h); }
+    if (ui.*.knowledge_mode > 0) { draw_knowledge_editor(scene, ui, w, h); }
+    if (ui.*.palette_open) { draw_palette(scene, w); }
+    if (ui.*.delete_confirm_sid.len > 0) { draw_delete_confirmation(scene, w, h); }
 }
 
 fn render(f: *FB, ui: *NativeUi, w: i32, h: i32) void {
-    fill_rect(f, 0, 0, w, h, rgb(13, 11, 10));
-    fill_rect(f, 0, 0, w, 40, rgb(28, 25, 23));
-    draw_text_scaled(f, 18, 14, "KORYPHAIOS", rgb(229, 194, 108), 2);
-    if (ui.*.safe_mode) { draw_text(f, w - 250, 16, "SAFE MODE", rgb(235, 185, 103)); }
-    draw_button(f, w - 136, 7, 118, "Providers", ui.*.settings_open);
-    fill_rect(f, 0, 40, 248, h - 40, rgb(20, 18, 16));
-    draw_sessions(f, ui, h);
-    draw_text(f, 18, h - 30, "Ctrl+K commands", rgb(139, 129, 116));
-    fill_rect(f, 248, 40, w - 248, h - 40, rgb(18, 16, 15));
-    if (!ui.*.core.*.ready) {
-        draw_text_scaled(f, 290, 94, "Startup recovery", rgb(235, 185, 103), 2);
-        draw_text(f, 290, 138, "Core readiness failed. No partial workspace is shown.", rgb(236, 223, 207));
-        draw_text(f, 290, 176, ui.*.core.*.error_code, rgb(235, 130, 110));
-        draw_text(f, 290, 214, "The invalid schema was backed up for diagnostics.", rgb(183, 172, 155));
-        return;
+    if (!scene_begin(&ui.*.scene, w, h)) { return; }
+    record_ui_scene(&ui.*.scene, ui, w, h);
+    if (ui.*.gpu.packet_runtime_ready) {
+        let packet: GpuScenePacket = scene_gpu_encode(&ui.*.scene);
+        if (!zag_gpu_packet_accept(ui.*.gpu, packet)) { ui.*.last_error = packet.error_code; }
+        list.free[u8](&packet.bytes);
     }
-    draw_feed(f, ui, w, h);
-    if (ui.*.settings_open) { draw_settings(f, ui, w, h); }
-    if (ui.*.knowledge_mode > 0) { draw_knowledge_editor(f, ui, w, h); }
-    if (ui.*.palette_open) { draw_palette(f, w); }
-    if (ui.*.delete_confirm_sid.len > 0) { draw_delete_confirmation(f, w, h); }
+    let _rendered: bool = scene_fb_execute(&ui.*.scene, f);
 }
 
 fn run_headless() i32 {
@@ -516,12 +670,19 @@ fn run_headless() i32 {
         _zag_eprintln("native-headless: FAIL workflow");
         return 1;
     }
+    ui_key(ui, 'g', 2);
+    if (list.get[*Session](core.*.store.*.sessions, 0).*.message_count != 2 ||
+        ui_last_event(ui) == null ||
+        list.get[*AppEvent](ui.*.core.*.events, ui.*.core.*.events.len - 5).*.kind != AppEventKind.message_regenerated) {
+        _zag_eprintln("native-headless: FAIL regenerate-keyboard");
+        return 1;
+    }
     // Pointer activation reuses an untouched session by default; force-new is
     // explicit and keyboard reachable.
-    ui_pointer(ui, 20, 90, 1, 1024, 640);
-    ui_pointer(ui, 20, 90, 0, 1024, 640);
-    ui_pointer(ui, 20, 90, 1, 1024, 640);
-    ui_pointer(ui, 20, 90, 0, 1024, 640);
+    ui_pointer(ui, 240, 70, 1, 1024, 640);
+    ui_pointer(ui, 240, 70, 0, 1024, 640);
+    ui_pointer(ui, 240, 70, 1, 1024, 640);
+    ui_pointer(ui, 240, 70, 0, 1024, 640);
     ui_key(ui, 'n', 3);
     if (core.*.store.*.sessions.len != 3) {
         _zag_eprintln("native-headless: FAIL reuse-force-new");
@@ -564,6 +725,7 @@ fn run_headless() i32 {
         return 1;
     }
     let logical: FB = fb_new(width / scale, height / scale);
+    if (arg_has("--settings-open")) { ui.*.settings_open = true; }
     render(&logical, ui, logical.w, logical.h);
     if (arg_has("--capture")) {
         let path: []u8 = arg_after("--capture", "koryphaios-native.bmp");
@@ -575,7 +737,9 @@ fn run_headless() i32 {
             fb_write_bmp(&physical, path);
         }
     }
-    _zag_println("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=user-assistant-persist simulator=test-only usage=unknown-omitted settings=provider-search-persist knowledge=markdown-memory-rules renderer=framebuffer");
+    _zag_print("native-headless: PASS contract=AppCommand/AppEvent keyboard=pass pointer=pass session=create-reuse-force-rename-confirm-delete message=user-assistant-regenerate-persist simulator=test-only usage=unknown-omitted settings=provider-search-persist knowledge=markdown-memory-rules renderer=typed-scene-cpu-oracle gpu-stack=");
+    if (ui.*.gpu.physical_gfx1010_ready) { _zag_println("direct-drm-ready"); }
+    else { _zag_println("zag-owned-virtual/E_GPU_DIRECT_DRM_INCOMPLETE"); }
     return 0;
 }
 
@@ -677,11 +841,33 @@ fn main() i32 {
     if (arg_has("--version")) { _zag_println("koryphaios-zag 0.2.0-native-core"); return 0; }
     if (arg_has("--diagnostics")) {
         let core: *AppCore = core_open(data_dir_from_args());
+        let gpu: ZagGpuStatus = zag_gpu_status();
         _zag_print("diagnostics: ui=x11 core=in-process http=disabled providers=");
         _zag_print(_zag_i64_to_str(core.*.providers.len as i64));
         _zag_print(" storage=");
         if (core.*.ready) { _zag_print("ready"); } else { _zag_print(core.*.error_code); }
-        _zag_println(" tls-pki=not-ready");
+        _zag_print(" tls-pki=not-ready gpu-stack=zag-owned target=");
+        _zag_print(gpu.target);
+        _zag_print(" kernel-abi=");
+        _zag_print(gpu.kernel_abi);
+        _zag_print(" driver-discovery=");
+        if (gpu.kernel_uapi_discovery_ready) {
+            _zag_print(gpu.driver_name);_zag_print("@");_zag_print(gpu.render_node);
+            _zag_print(" gfx=");_zag_print(_zag_i64_to_str(gpu.gfx_ip_major as i64));
+            _zag_print(".");_zag_print(_zag_i64_to_str(gpu.gfx_ip_minor as i64));
+            _zag_print(" rings=");_zag_print(_zag_i64_to_str(gpu.gfx_rings as i64));
+            _zag_print("/");_zag_print(_zag_i64_to_str(gpu.compute_rings as i64));
+            _zag_print(" device=");_zag_print(_zag_i64_to_str(gpu.device_id as i64));
+            _zag_print(" cus=");_zag_print(_zag_i64_to_str(gpu.active_cus as i64));
+            _zag_print(" wave=");_zag_print(_zag_i64_to_str(gpu.wave_size as i64));
+        } else { _zag_print("unavailable"); }
+        _zag_print(" virtual=");
+        if (gpu.virtual_gfx1010_ready) { _zag_print("ready"); } else { _zag_print("unavailable"); }
+        _zag_print(" memory-only=");
+        if (gpu.memory_only_ready) { _zag_print("ready"); } else { _zag_print("unavailable"); }
+        _zag_print(" physical=");
+        if (gpu.physical_gfx1010_ready) { _zag_println("ready"); }
+        else { _zag_println(gpu.error_code); }
         return 0;
     }
     if (arg_has("--headless-test") || arg_has("--capture")) { return run_headless(); }

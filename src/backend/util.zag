@@ -209,6 +209,74 @@ fn native_spawn_cline(executable: []u8, prompt: []u8, cwd: []u8, out_file: []u8)
     return pid;
 }
 
+// Spawn a verified read-only headless provider without a shell. Each profile
+// uses only flags documented by that provider; prompts remain opaque argv
+// values and can never become command text.
+fn native_spawn_readonly_cli(provider_id: []u8, executable: []u8, prompt: []u8, cwd: []u8, out_file: []u8) i64 {
+    let exe_c: *i8 = util_cpath(executable);
+    let prompt_c: *i8 = util_cpath(prompt);
+    let cwd_c: *i8 = util_cpath(cwd);
+    let out_c: *i8 = util_cpath(out_file);
+    let devnull: *i8 = util_cpath("/dev/null");
+    let argv: *i64 = _zag_malloc(16 * 8) as *i64;
+    let n: i32 = 0;
+    argv[n] = exe_c as i64; n = n + 1;
+    if (str_eq(provider_id, "claude-code")) {
+        argv[n] = util_cpath("--print") as i64; n = n + 1;
+        argv[n] = util_cpath("--output-format") as i64; n = n + 1;
+        argv[n] = util_cpath("stream-json") as i64; n = n + 1;
+        argv[n] = util_cpath("--permission-mode") as i64; n = n + 1;
+        argv[n] = util_cpath("plan") as i64; n = n + 1;
+        argv[n] = util_cpath("--no-session-persistence") as i64; n = n + 1;
+        argv[n] = prompt_c as i64; n = n + 1;
+    } else if (str_eq(provider_id, "gemini-cli")) {
+        argv[n] = util_cpath("--prompt") as i64; n = n + 1;
+        argv[n] = prompt_c as i64; n = n + 1;
+        argv[n] = util_cpath("--output-format") as i64; n = n + 1;
+        argv[n] = util_cpath("stream-json") as i64; n = n + 1;
+        argv[n] = util_cpath("--approval-mode") as i64; n = n + 1;
+        argv[n] = util_cpath("plan") as i64; n = n + 1;
+        argv[n] = util_cpath("--sandbox") as i64; n = n + 1;
+    } else if (str_eq(provider_id, "cursor")) {
+        argv[n] = util_cpath("--print") as i64; n = n + 1;
+        argv[n] = util_cpath("--output-format") as i64; n = n + 1;
+        argv[n] = util_cpath("stream-json") as i64; n = n + 1;
+        argv[n] = util_cpath("--stream-partial-output") as i64; n = n + 1;
+        argv[n] = util_cpath("--mode") as i64; n = n + 1;
+        argv[n] = util_cpath("plan") as i64; n = n + 1;
+        argv[n] = util_cpath("--sandbox") as i64; n = n + 1;
+        argv[n] = util_cpath("enabled") as i64; n = n + 1;
+        argv[n] = util_cpath("--workspace") as i64; n = n + 1;
+        argv[n] = cwd_c as i64; n = n + 1;
+        argv[n] = prompt_c as i64; n = n + 1;
+    } else if (str_eq(provider_id, "jules")) {
+        // Jules is an asynchronous repository agent. `remote new` delegates a
+        // session but does not pull or apply its result.
+        argv[n] = util_cpath("remote") as i64; n = n + 1;
+        argv[n] = util_cpath("new") as i64; n = n + 1;
+        argv[n] = util_cpath("--repo") as i64; n = n + 1;
+        argv[n] = util_cpath(".") as i64; n = n + 1;
+        argv[n] = util_cpath("--session") as i64; n = n + 1;
+        argv[n] = prompt_c as i64; n = n + 1;
+    } else { return 0 - 1; }
+    argv[n] = 0;
+    let envp: *i64 = spawn_build_envp();
+    let pid: i64 = _zag_raw_syscall(57, 0, 0, 0, 0, 0, 0);
+    if (pid < 0) { return 0 - 1; }
+    if (pid == 0) {
+        _zag_raw_syscall(112, 0, 0, 0, 0, 0, 0);
+        if (cwd.len > 0) { _zag_raw_syscall(80, cwd_c as i64, 0, 0, 0, 0, 0); }
+        let ofd: i64 = _zag_raw_syscall(2, out_c as i64, 577, 384, 0, 0, 0);
+        _zag_raw_syscall(33, ofd, 1, 0, 0, 0, 0);
+        _zag_raw_syscall(33, ofd, 2, 0, 0, 0, 0);
+        let nfd: i64 = _zag_raw_syscall(2, devnull as i64, 0, 0, 0, 0, 0);
+        _zag_raw_syscall(33, nfd, 0, 0, 0, 0, 0);
+        _zag_raw_syscall(59, exe_c as i64, argv as i64, envp as i64, 0, 0, 0);
+        _zag_raw_syscall(60, 127, 0, 0, 0, 0, 0);
+    }
+    return pid;
+}
+
 fn util_poll_child(pid: i64) i32 {
     let stbuf: *i8 = _zag_malloc(8);
     wr_u64le(stbuf, 0, 0);

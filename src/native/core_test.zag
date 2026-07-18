@@ -80,6 +80,20 @@ fn main() i32 {
         str_index_of(util_read_or_empty(cline_args), "--plan\n--json\n--auto-approve\nfalse\n--cwd") >= 0 &&
         util_read_or_empty(injection_marker).len == 0, &failures);
 
+    let cline_before_regenerate: []u8 = _zag_strdup(production_messages);
+    let cline_regenerate: AppCommand = core_command(AppCommandKind.message_regenerate,
+        production.*.active_session_id, "");
+    let cline_regenerate_started: bool = core_dispatch(production, &cline_regenerate);
+    spins = 0;
+    while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    let cline_regenerated_messages: []u8 = store_messages_raw(production.*.store, production.*.active_session_id);
+    check("Cline regeneration re-executes the persisted prompt and atomically replaces the assistant",
+        cline_regenerate_started && !core_cli_running(production) &&
+        get[*Session](production.*.store.*.sessions, 0).*.message_count == 2 &&
+        !str_eq(cline_regenerated_messages, cline_before_regenerate) &&
+        str_index_of(util_read_or_empty(cline_args), "$(touch ") >= 0 &&
+        util_read_or_empty(injection_marker).len == 0, &failures);
+
     util_write_atomic(fake_cline, "#!/bin/sh\nwhile :; do :; done\n");
     util_chmod(fake_cline, 493);
     let long_send: AppCommand = core_command(AppCommandKind.message_send, "", "cancel this turn");
@@ -122,6 +136,62 @@ fn main() i32 {
         str_index_of(codex_messages, "Codex native reply") >= 0 &&
         str_index_of(codex_messages, "\"tokensIn\":17") >= 0 &&
         str_index_of(codex_messages, "\"tokensOut\":5") >= 0, &failures);
+
+    let fake_claude: []u8 = _zag_str_concat(fake_bin, "/claude");
+    let claude_args: []u8 = _zag_str_concat(root, "/claude-args");
+    util_write_atomic(fake_claude, _zag_str_concat("#!/bin/sh\nprintf '%s\\n' \"$@\" > '",
+        _zag_str_concat(claude_args, "'\nprintf '%s\\n' '{\"type\":\"result\",\"result\":\"Claude native reply\",\"usage\":{\"input_tokens\":19,\"output_tokens\":7}}'\n")));
+    util_chmod(fake_claude, 493);
+    if (core_find_provider(production, "claude-code")) |p| { p.*.available = true; p.*.authenticated = true; p.*.detected_path = fake_claude; }
+    let select_claude: AppCommand = core_command(AppCommandKind.provider_select, "", "claude-code");
+    let send_claude: AppCommand = core_command(AppCommandKind.message_send, "", "run through claude");
+    let claude_ok: bool = core_dispatch(production, &select_claude) && core_dispatch(production, &send_claude);
+    spins = 0; while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    let claude_messages: []u8 = store_messages_raw(production.*.store, production.*.active_session_id);
+    check("Claude Code direct executor is plan-only, shell-free, and preserves exact usage",
+        claude_ok && str_index_of(claude_messages, "Claude native reply") >= 0 &&
+        str_index_of(claude_messages, "\"tokensIn\":19") >= 0 &&
+        str_index_of(util_read_or_empty(claude_args), "--permission-mode\nplan\n--no-session-persistence") >= 0, &failures);
+
+    let fake_gemini: []u8 = _zag_str_concat(fake_bin, "/gemini");
+    util_write_atomic(fake_gemini, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"Gemini native reply\",\"delta\":true}' '{\"type\":\"result\",\"status\":\"success\",\"stats\":{\"input_tokens\":23,\"output_tokens\":8}}'\n");
+    util_chmod(fake_gemini, 493);
+    if (core_find_provider(production, "gemini-cli")) |p| { p.*.available = true; p.*.authenticated = true; p.*.detected_path = fake_gemini; }
+    let select_gemini: AppCommand = core_command(AppCommandKind.provider_select, "", "gemini-cli");
+    let send_gemini: AppCommand = core_command(AppCommandKind.message_send, "", "run through gemini");
+    let gemini_ok: bool = core_dispatch(production, &select_gemini) && core_dispatch(production, &send_gemini);
+    spins = 0; while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    let gemini_messages: []u8 = store_messages_raw(production.*.store, production.*.active_session_id);
+    check("Gemini CLI direct executor streams provider JSONL and preserves exact usage",
+        gemini_ok && str_index_of(gemini_messages, "Gemini native reply") >= 0 &&
+        str_index_of(gemini_messages, "\"tokensIn\":23") >= 0, &failures);
+
+    let fake_cursor: []u8 = _zag_str_concat(fake_bin, "/cursor-agent");
+    util_write_atomic(fake_cursor, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"result\":\"Cursor native reply\",\"usage\":{\"input_tokens\":29,\"output_tokens\":9}}'\n");
+    util_chmod(fake_cursor, 493);
+    if (core_find_provider(production, "cursor")) |p| { p.*.available = true; p.*.authenticated = true; p.*.detected_path = fake_cursor; }
+    let select_cursor: AppCommand = core_command(AppCommandKind.provider_select, "", "cursor");
+    let send_cursor: AppCommand = core_command(AppCommandKind.message_send, "", "run through cursor");
+    let cursor_ok: bool = core_dispatch(production, &select_cursor) && core_dispatch(production, &send_cursor);
+    spins = 0; while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    let cursor_messages: []u8 = store_messages_raw(production.*.store, production.*.active_session_id);
+    check("Cursor Agent direct executor is sandboxed plan mode and shell-free",
+        cursor_ok && str_index_of(cursor_messages, "Cursor native reply") >= 0, &failures);
+
+    let fake_jules: []u8 = _zag_str_concat(fake_bin, "/jules");
+    let jules_args: []u8 = _zag_str_concat(root, "/jules-args");
+    util_write_atomic(fake_jules, _zag_str_concat("#!/bin/sh\nprintf '%s\\n' \"$@\" > '",
+        _zag_str_concat(jules_args, "'\nprintf '%s\\n' 'Created session 31415926535897932384'\n")));
+    util_chmod(fake_jules, 493);
+    if (core_find_provider(production, "jules")) |p| { p.*.available = true; p.*.authenticated = true; p.*.detected_path = fake_jules; }
+    let select_jules: AppCommand = core_command(AppCommandKind.provider_select, "", "jules");
+    let send_jules: AppCommand = core_command(AppCommandKind.message_send, "", "delegate to jules");
+    let jules_ok: bool = core_dispatch(production, &select_jules) && core_dispatch(production, &send_jules);
+    spins = 0; while (core_cli_running(production) && spins < 100000) { core_tick(production); spins = spins + 1; }
+    let jules_messages: []u8 = store_messages_raw(production.*.store, production.*.active_session_id);
+    check("Jules direct executor delegates without pulling or applying remote changes",
+        jules_ok && str_index_of(jules_messages, "Created session 31415926535897932384") >= 0 &&
+        str_index_of(util_read_or_empty(jules_args), "remote\nnew\n--repo\n.\n--session\ndelegate to jules") >= 0, &failures);
 
     let make_session: AppCommand = core_command(AppCommandKind.session_new, "", "Native workflow");
     check("session_new command succeeds", core_dispatch(core, &make_session), &failures);
@@ -167,6 +237,26 @@ fn main() i32 {
         get[*AppEvent](core.*.events, core.*.events.len - 1).*.kind == AppEventKind.agent_status &&
         str_eq(get[*AppEvent](core.*.events, core.*.events.len - 1).*.payload, "done"),
         &failures);
+
+    let before_regeneration: []u8 = _zag_strdup(messages);
+    let regenerate: AppCommand = core_command(AppCommandKind.message_regenerate, session.*.id, "");
+    check("regeneration replaces only the trailing assistant and reuses the persisted user prompt",
+        core_dispatch(core, &regenerate) && session.*.message_count == 2 &&
+        !str_eq(store_messages_raw(core.*.store, session.*.id), before_regeneration) &&
+        str_index_of(store_messages_raw(core.*.store, session.*.id), "hello from native Zag") >= 0 &&
+        str_index_of(store_messages_raw(core.*.store, session.*.id), "Simulator reply: hello from native Zag") >= 0,
+        &failures);
+    let empty_regenerate_session: AppCommand = core_forced_command(AppCommandKind.session_new, "", "No answer yet");
+    let _empty_created: bool = core_dispatch(core, &empty_regenerate_session);
+    let empty_regenerate_id: []u8 = _zag_strdup(core.*.active_session_id);
+    let unavailable_regenerate: AppCommand = core_command(AppCommandKind.message_regenerate, core.*.active_session_id, "");
+    check("regeneration fails closed when no completed user/assistant pair exists",
+        !core_dispatch(core, &unavailable_regenerate) &&
+        str_eq(get[*AppEvent](core.*.events, core.*.events.len - 1).*.code, "E_REGENERATE_UNAVAILABLE"), &failures);
+    let remove_empty_regenerate: AppCommand = core_command(AppCommandKind.session_delete, empty_regenerate_id, "");
+    let _removed_empty_regenerate: bool = core_dispatch(core, &remove_empty_regenerate);
+    let select_original: AppCommand = core_command(AppCommandKind.session_select, session.*.id, "");
+    let _selected_original: bool = core_dispatch(core, &select_original);
 
     let always: AppCommand = core_command(AppCommandKind.setting_always_create_session, "", "true");
     check("always-create preference persists as a real setting", core_dispatch(core, &always) &&

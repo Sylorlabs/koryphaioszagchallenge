@@ -1,0 +1,141 @@
+// Backend-neutral native UI scene commands.
+//
+// Product code records typed drawing intent here instead of calling a concrete
+// framebuffer or GPU API. Backends must validate the complete scene before
+// execution and fail closed when a command or resource envelope is invalid.
+
+@import("../../zagstd/list.zag") as list
+
+enum SceneOpKind {
+    fill_rect,
+    round_rect_outline,
+    text,
+    text_scaled,
+    text_max,
+}
+
+struct SceneOp {
+    kind: SceneOpKind,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    radius: i32,
+    scale: i32,
+    color: i64,
+    content: []u8,
+}
+
+struct Scene {
+    ops: list.ArrayList[SceneOp],
+    width: i32,
+    height: i32,
+    begun: bool,
+    rejected: bool,
+    error_code: []u8,
+}
+
+fn scene_max_extent() i32 { return 32768; }
+fn scene_max_ops() i32 { return 65536; }
+fn scene_max_text_bytes() i32 { return 1048576; }
+
+fn scene_make(initial_capacity: i32) Scene {
+    let cap: i32 = initial_capacity;
+    if (cap < 1) { cap = 1; }
+    return Scene{
+        .ops = list.make[SceneOp](cap),
+        .width = 0,
+        .height = 0,
+        .begun = false,
+        .rejected = false,
+        .error_code = "",
+    };
+}
+
+fn scene_reject(scene: *Scene, code: []u8) bool {
+    scene.*.rejected = true;
+    if (scene.*.error_code.len == 0) { scene.*.error_code = code; }
+    return false;
+}
+
+fn scene_begin(scene: *Scene, width: i32, height: i32) bool {
+    scene.*.ops.len = 0;
+    scene.*.width = width;
+    scene.*.height = height;
+    scene.*.begun = false;
+    scene.*.rejected = false;
+    scene.*.error_code = "";
+    if (width < 1 || height < 1 || width > scene_max_extent() || height > scene_max_extent()) {
+        return scene_reject(scene, "E_SCENE_VIEWPORT");
+    }
+    scene.*.begun = true;
+    return true;
+}
+
+fn scene_rect_valid(x: i32, y: i32, w: i32, h: i32) bool {
+    let limit: i32 = scene_max_extent();
+    if (w < 1 || h < 1 || w > limit || h > limit) { return false; }
+    if (x < 0 - limit || x > limit || y < 0 - limit || y > limit) { return false; }
+    return true;
+}
+
+fn scene_push(scene: *Scene, op: SceneOp) bool {
+    if (!scene.*.begun) { return scene_reject(scene, "E_SCENE_NOT_BEGUN"); }
+    if (scene.*.rejected) { return false; }
+    if (scene.*.ops.len >= scene_max_ops()) { return scene_reject(scene, "E_SCENE_COMMAND_LIMIT"); }
+    list.push[SceneOp](&scene.*.ops, op);
+    return true;
+}
+
+fn scene_fill_rect(scene: *Scene, x: i32, y: i32, w: i32, h: i32, color: i64) bool {
+    if (!scene_rect_valid(x, y, w, h)) { return scene_reject(scene, "E_SCENE_RECT"); }
+    return scene_push(scene, SceneOp{
+        .kind = SceneOpKind.fill_rect,
+        .x = x, .y = y, .w = w, .h = h,
+        .radius = 0, .scale = 1, .color = color, .content = "",
+    });
+}
+
+fn scene_round_rect_outline(scene: *Scene, x: i32, y: i32, w: i32, h: i32,
+                            radius: i32, color: i64) bool {
+    if (!scene_rect_valid(x, y, w, h) || radius < 0 || radius > scene_max_extent()) {
+        return scene_reject(scene, "E_SCENE_ROUND_RECT");
+    }
+    return scene_push(scene, SceneOp{
+        .kind = SceneOpKind.round_rect_outline,
+        .x = x, .y = y, .w = w, .h = h,
+        .radius = radius, .scale = 1, .color = color, .content = "",
+    });
+}
+
+fn scene_text_common(scene: *Scene, kind: SceneOpKind, x: i32, y: i32,
+                     content: []u8, color: i64, scale: i32, max_width: i32) bool {
+    let limit: i32 = scene_max_extent();
+    if (x < 0 - limit || x > limit || y < 0 - limit || y > limit ||
+        content.len > scene_max_text_bytes() || scale < 1 || scale > 16 ||
+        max_width < 0 || max_width > limit) {
+        return scene_reject(scene, "E_SCENE_TEXT");
+    }
+    return scene_push(scene, SceneOp{
+        .kind = kind,
+        .x = x, .y = y, .w = max_width, .h = 0,
+        .radius = 0, .scale = scale, .color = color, .content = content,
+    });
+}
+
+fn scene_text(scene: *Scene, x: i32, y: i32, content: []u8, color: i64) bool {
+    return scene_text_common(scene, SceneOpKind.text, x, y, content, color, 1, 0);
+}
+
+fn scene_text_scaled(scene: *Scene, x: i32, y: i32, content: []u8,
+                     color: i64, scale: i32) bool {
+    return scene_text_common(scene, SceneOpKind.text_scaled, x, y, content, color, scale, 0);
+}
+
+fn scene_text_max(scene: *Scene, x: i32, y: i32, content: []u8,
+                  color: i64, max_width: i32) bool {
+    if (max_width < 1) { return scene_reject(scene, "E_SCENE_TEXT_WIDTH"); }
+    return scene_text_common(scene, SceneOpKind.text_max, x, y, content, color, 1, max_width);
+}
+
+fn scene_command_count(scene: *Scene) i32 { return scene.*.ops.len; }

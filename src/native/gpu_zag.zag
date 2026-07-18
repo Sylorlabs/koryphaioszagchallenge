@@ -1,0 +1,77 @@
+// Koryphaios GPU boundary.
+//
+// Zag owns the scene model, packets, shader/compiler pipeline, validation,
+// command construction, synchronization, and userspace adapters. Only the
+// installed Linux kernel GPU driver and firmware are outside this boundary.
+// No Vulkan, OpenGL, OpenCL, CUDA, Level Zero, Mesa, or libdrm runtime is used.
+
+@import("scene_gpu.zag")
+@import("gpu_drm.zag")
+
+struct ZagGpuStatus {
+    userspace_owned: bool,
+    packet_runtime_ready: bool,
+    virtual_gfx1010_ready: bool,
+    kernel_uapi_discovery_ready: bool,
+    physical_gfx1010_ready: bool,
+    target: []u8,
+    kernel_abi: []u8,
+    render_node: []u8,
+    driver_name: []u8,
+    driver_version_major: i32,
+    driver_version_minor: i32,
+    gfx_ip_major: i32,
+    gfx_ip_minor: i32,
+    gfx_rings: i32,
+    compute_rings: i32,
+    device_id: i32,
+    active_cus: i32,
+    wave_size: i32,
+    gpuvm_memory_ready: bool,
+    memory_only_ready: bool,
+    error_code: []u8,
+}
+
+fn zag_gpu_status() ZagGpuStatus {
+    // The sibling Zag source currently proves its native GFX10.1 compiler and
+    // strict virtual command processor. Direct DRM render-node allocation,
+    // mapping, submission, fences, and presentation are not yet implemented,
+    // so physical readiness must remain false.
+    let drm:DrmProbe=drm_find_amdgpu();
+    let gfx:AmdgpuHwIp=amdgpu_hw_ip(drm.render_node,0);
+    let compute:AmdgpuHwIp=amdgpu_hw_ip(drm.render_node,1);
+    let device:AmdgpuDeviceInfo=amdgpu_device_info(drm.render_node);
+    let gpuvm:AmdgpuGpuVmResult=amdgpu_gpuvm_roundtrip(drm.render_node);
+    let memory:AmdgpuMemoryResult=amdgpu_memory_roundtrip(drm.render_node,4096);
+    return ZagGpuStatus{
+        .userspace_owned = true,
+        .packet_runtime_ready = true,
+        .virtual_gfx1010_ready = true,
+        .kernel_uapi_discovery_ready = drm.ok&&gfx.ok&&compute.ok&&device.ok,
+        .physical_gfx1010_ready = false,
+        .target = "amdgpu-gfx1010",
+        .kernel_abi = "linux-amdgpu-drm",
+        .render_node = drm.render_node,
+        .driver_name = drm.driver_name,
+        .driver_version_major = drm.version_major,
+        .driver_version_minor = drm.version_minor,
+        .gfx_ip_major = gfx.version_major,
+        .gfx_ip_minor = gfx.version_minor,
+        .gfx_rings = gfx.available_rings,
+        .compute_rings = compute.available_rings,
+        .device_id = device.device_id,
+        .active_cus = device.active_cus,
+        .wave_size = device.wave_size,
+        .gpuvm_memory_ready = gpuvm.ok,
+        .memory_only_ready = memory.ok&&gpuvm.ok,
+        .error_code = "E_GPU_DIRECT_DRM_INCOMPLETE",
+    };
+}
+
+fn zag_gpu_packet_accept(status: ZagGpuStatus, packet: GpuScenePacket) bool {
+    if (!status.userspace_owned || !status.packet_runtime_ready || !packet.ready) { return false; }
+    if (packet.bytes.len < 32 || packet.bytes.data[0] != 'Z' as u8 ||
+        packet.bytes.data[1] != 'G' as u8 || packet.bytes.data[2] != 'P' as u8 ||
+        packet.bytes.data[3] != 'U' as u8) { return false; }
+    return true;
+}

@@ -1,0 +1,35 @@
+@import("gpu_zag.zag")
+
+fn main() i32 {
+    let checks: i32 = 0;
+    let status: ZagGpuStatus = zag_gpu_status();
+    if (!status.userspace_owned || !status.packet_runtime_ready ||
+        !status.virtual_gfx1010_ready || status.physical_gfx1010_ready) { return 1; }
+    checks = checks + 1;
+    if (!status.kernel_uapi_discovery_ready ||
+        _zag_strcmp(status.driver_name,"amdgpu") != 1 || status.render_node.len == 0 ||
+        status.gfx_ip_major != 10 || status.gfx_rings <= 0 || status.compute_rings <= 0 ||
+        status.device_id != 0x731F || status.active_cus <= 0 || status.wave_size != 32 ||
+        !status.gpuvm_memory_ready || !status.memory_only_ready) { return 6; }
+    checks = checks + 1;
+    if (_zag_strcmp(status.target, "amdgpu-gfx1010") != 1 ||
+        _zag_strcmp(status.kernel_abi, "linux-amdgpu-drm") != 1 ||
+        _zag_strcmp(status.error_code, "E_GPU_DIRECT_DRM_INCOMPLETE") != 1) { return 2; }
+    checks = checks + 1;
+
+    let scene: Scene = scene_make(2);
+    if (!scene_begin(&scene, 64, 64)) { return 3; }
+    let _fill: bool = scene_fill_rect(&scene, 0, 0, 64, 64, 0x112233);
+    let packet: GpuScenePacket = scene_gpu_encode(&scene);
+    if (!zag_gpu_packet_accept(status, packet)) { return 4; }
+    checks = checks + 1;
+
+    packet.bytes.data[0] = 0;
+    if (zag_gpu_packet_accept(status, packet)) { return 5; }
+    checks = checks + 1;
+
+    _zag_print("ZAG GPU BOUNDARY: ");
+    _zag_print(_zag_i64_to_str(checks as i64));
+    _zag_println(" checks, 0 failed");
+    return 0;
+}

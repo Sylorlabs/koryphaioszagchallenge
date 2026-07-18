@@ -2,7 +2,7 @@
 
 `tools/package.sh` produces a browser-free Linux x86-64 directory containing:
 
-- the static Zag ELF;
+- the static Zag ELF with no userspace GPU-library dependency;
 - the X11 desktop entry;
 - the Apache-2.0 Koryphaios application icon from the tracked parity snapshot;
 - install and uninstall scripts;

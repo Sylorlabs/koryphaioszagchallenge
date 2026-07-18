@@ -40,15 +40,85 @@ fi
 if [[ -f LICENSE && -f docs/PROVENANCE.md ]]; then record provenance pass documented; else record provenance fail missing-license-or-provenance; fi
 
 if "$znc" src/native/main.zag -o build/koryphaios --analyze-strict >/tmp/koryphaios-zag-build.log 2>&1; then
-  record native-build pass strict
+  record native-build pass strict-static-zag-userspace
 else
   record native-build fail strict-build
   sed -n '1,80p' /tmp/koryphaios-zag-build.log >&2
 fi
 
+if "$znc" src/native/gpu_zag_test.zag -o build/gpu_zag_test --analyze-strict \
+   >/tmp/koryphaios-zag-gpu-build.log 2>&1 &&
+   zag_gpu_output="$(build/gpu_zag_test)" &&
+   printf '%s\n' "$zag_gpu_output" | rg -q 'ZAG GPU BOUNDARY: 5 checks, 0 failed'; then
+  record zag-gpu-boundary pass userspace-owned-packet-direct-drm-discovery-virtual-ready-physical-fail-closed
+else
+  record zag-gpu-boundary fail build-or-test
+  sed -n '1,80p' /tmp/koryphaios-zag-gpu-build.log >&2
+fi
+
+if "$znc" src/native/gpu_drm_test.zag -o build/gpu_drm_test --analyze-strict \
+   >/tmp/koryphaios-drm-build.log 2>&1 &&
+   drm_output="$(build/gpu_drm_test)" &&
+   printf '%s\n' "$drm_output" | rg -q 'DIRECT DRM DISCOVERY: 10 checks, 0 failed driver=amdgpu gfx=10'; then
+  record direct-drm-discovery pass pure-zag-raw-syscalls-live-navi10-gfx-compute-gpuvm-map-unmap-gtt-roundtrip
+else
+  record direct-drm-discovery fail build-or-live-probe
+  sed -n '1,80p' /tmp/koryphaios-drm-build.log >&2
+fi
+
+zag_source_root="${ZAG_SOURCE_ROOT:-$PWD/../zag/zag-poc}"
+if [[ -x "$zag_source_root/tests/run_gpu_platform.sh" && -x "$zag_source_root/tests/run_gfx1010_vm.sh" ]] &&
+   (cd "$zag_source_root" && ./tests/run_gpu_platform.sh >/tmp/koryphaios-zag-gpu-platform.log 2>&1) &&
+   (cd "$zag_source_root" && ./tests/run_gfx1010_vm.sh >/tmp/koryphaios-zag-gfx1010-vm.log 2>&1) &&
+   rg -q 'GPU PLATFORM: ALL PASS' /tmp/koryphaios-zag-gpu-platform.log &&
+   rg -q 'GFX1010 VM: ALL PASS' /tmp/koryphaios-zag-gfx1010-vm.log; then
+  record zag-gpu-source pass native-gfx1010-codegen-pm4-vm-fill-depth-blend
+else
+  record zag-gpu-source fail missing-or-failed-sibling-source-gate
+  sed -n '1,80p' /tmp/koryphaios-zag-gpu-platform.log 2>/dev/null >&2 || true
+  sed -n '1,80p' /tmp/koryphaios-zag-gfx1010-vm.log 2>/dev/null >&2 || true
+fi
+
+if rg -n 'libvulkan|vk[A-Z][[:alnum:]_]*|@extern\("(vulkan|GL|cuda|ze|drm)' src/native src/backend \
+   >/tmp/koryphaios-userspace-gpu-dependency.log; then
+  record gpu-userspace-dependency fail third-party-gpu-api-reference
+  sed -n '1,40p' /tmp/koryphaios-userspace-gpu-dependency.log >&2
+else
+  record gpu-userspace-dependency pass zag-owned-no-vulkan-mesa-libdrm-cuda-level-zero
+fi
+
+if "$znc" src/native/scene_test.zag -o build/scene_test --analyze-strict >/tmp/koryphaios-scene-build.log 2>&1 &&
+   scene_output="$(build/scene_test)" &&
+   printf '%s\n' "$scene_output" | rg -q 'NATIVE SCENE: 10 checks, 0 failed'; then
+  record native-scene pass typed-command-validation-deterministic-cpu-oracle-fail-closed
+else
+  record native-scene fail failed
+  sed -n '1,80p' /tmp/koryphaios-scene-build.log >&2
+fi
+
+if "$znc" src/native/scene_gpu_test.zag -o build/scene_gpu_test --analyze-strict \
+   >/tmp/koryphaios-gpu-scene-build.log 2>&1 &&
+   gpu_scene_output="$(build/scene_gpu_test)" &&
+   printf '%s\n' "$gpu_scene_output" | rg -q 'GPU SCENE PACKET: 4 checks, 0 failed'; then
+  record gpu-scene-packet pass deterministic-versioned-bounded-transport-independent
+else
+  record gpu-scene-packet fail build-or-test
+  sed -n '1,80p' /tmp/koryphaios-gpu-scene-build.log >&2
+fi
+
+if rg -n '(^|[^[:alnum:]_])(fill_rect|blend_rect|fill_round_rect|blend_round_rect|round_rect_outline|draw_text|draw_text_scaled|draw_text_max)\(' \
+   src/native/main.zag >/tmp/koryphaios-scene-boundary.log; then
+  record native-scene-boundary fail product-ui-bypasses-typed-scene
+  sed -n '1,40p' /tmp/koryphaios-scene-boundary.log >&2
+else
+  record native-scene-boundary pass product-ui-records-typed-scene-only
+fi
+
 if [[ -x build/koryphaios ]] && headless_output="$(build/koryphaios --headless-test)" &&
    printf '%s\n' "$headless_output" | rg -q 'session=create-reuse-force-rename-confirm-delete' &&
-   printf '%s\n' "$headless_output" | rg -q 'knowledge=markdown-memory-rules'; then
+   printf '%s\n' "$headless_output" | rg -q 'message=user-assistant-regenerate-persist' &&
+   printf '%s\n' "$headless_output" | rg -q 'knowledge=markdown-memory-rules' &&
+   printf '%s\n' "$headless_output" | rg -q 'gpu-stack=zag-owned-virtual/E_GPU_DIRECT_DRM_INCOMPLETE'; then
   record native-headless pass contract-keyboard-pointer-session-lifecycle-knowledge-renderer
 else
   record native-headless fail failed
@@ -58,13 +128,20 @@ if "$znc" src/native/core_test.zag -o build/core_test --analyze-strict >/tmp/kor
    core_output="$(build/core_test)" &&
    printf '%s\n' "$core_output" | rg -q 'production chat fails closed before persistence' &&
    printf '%s\n' "$core_output" | rg -q 'Cline NDJSON snapshots stream once and persist assistant output' &&
+   printf '%s\n' "$core_output" | rg -q 'Cline regeneration re-executes the persisted prompt' &&
    printf '%s\n' "$core_output" | rg -q 'Cline cancellation sends SIGTERM' &&
    printf '%s\n' "$core_output" | rg -q 'Cline timeout kills and reaps' &&
    printf '%s\n' "$core_output" | rg -q 'Codex selection executes JSONL' &&
+   printf '%s\n' "$core_output" | rg -q 'Claude Code direct executor is plan-only' &&
+   printf '%s\n' "$core_output" | rg -q 'Gemini CLI direct executor streams provider JSONL' &&
+   printf '%s\n' "$core_output" | rg -q 'Cursor Agent direct executor is sandboxed plan mode' &&
+   printf '%s\n' "$core_output" | rg -q 'Jules direct executor delegates without pulling or applying' &&
+   printf '%s\n' "$core_output" | rg -q 'regeneration replaces only the trailing assistant' &&
+   printf '%s\n' "$core_output" | rg -q 'regeneration fails closed when no completed user/assistant pair exists' &&
    printf '%s\n' "$core_output" | rg -q 'memory and rules write through to authoritative Markdown' &&
    printf '%s\n' "$core_output" | rg -q 'test simulator persists user and assistant without estimated usage' &&
    printf '%s\n' "$core_output" | rg -q 'NATIVE CORE: ALL PASS'; then
-  record native-core pass persistence-recovery-cline-and-codex-direct-exec-auth-stream-cancel-timeout-exact-usage-provider-fail-closed-session-settings-errors
+  record native-core pass persistence-recovery-six-cli-direct-exec-auth-stream-cancel-timeout-exact-usage-provider-fail-closed-regeneration-session-settings-errors
 else
   record native-core fail failed
   sed -n '1,80p' /tmp/koryphaios-zag-core-build.log >&2
@@ -148,11 +225,14 @@ else
 fi
 
 if rg -n -- '--yolo|--act|workspace-write|danger-full-access|auto-approve[^\n]*true' src/native src/backend \
-   >/tmp/koryphaios-security-preset-audit.log; then
+   >/tmp/koryphaios-security-preset-audit.log ||
+   ! rg -q 'util_cpath\("--permission-mode"\)' src/backend/util.zag ||
+   ! rg -q 'util_cpath\("--approval-mode"\)' src/backend/util.zag ||
+   ! rg -q 'util_cpath\("--sandbox"\)' src/backend/util.zag; then
   record security-preset-audit fail unconfirmed-dangerous-provider-policy
   sed -n '1,40p' /tmp/koryphaios-security-preset-audit.log >&2
 else
-  record security-preset-audit pass cline-plan-only-codex-read-only
+  record security-preset-audit pass cline-claude-gemini-cursor-plan-sandbox-codex-read-only-jules-delegation-only
 fi
 
 if rg -n 'http_server_make|frontend/public|/api/|WebSocket UI' src/native |

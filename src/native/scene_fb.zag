@@ -1,0 +1,28 @@
+// Deterministic software execution backend for native UI scenes.
+// This remains the pixel oracle and recovery path when an accelerated backend
+// is unavailable; normal UI code must not bypass the Scene boundary.
+
+@import("scene.zag")
+@import("fb.zag")
+@import("../../zagstd/list.zag") as list
+
+fn scene_fb_execute(scene: *Scene, fb: *FB) bool {
+    if (!scene.*.begun || scene.*.rejected) { return false; }
+    if (scene.*.width != fb.*.w || scene.*.height != fb.*.h) { return false; }
+    fb_clip_reset(fb);
+    let i: i32 = 0;
+    while (i < scene.*.ops.len) {
+        let op: SceneOp = list.get[SceneOp](scene.*.ops, i);
+        switch (op.kind) {
+            .fill_rect => { fill_rect(fb, op.x, op.y, op.w, op.h, op.color); }
+            .round_rect_outline => {
+                round_rect_outline(fb, op.x, op.y, op.w, op.h, op.radius, op.color);
+            }
+            .text => { draw_text(fb, op.x, op.y, op.content, op.color); }
+            .text_scaled => { draw_text_scaled(fb, op.x, op.y, op.content, op.color, op.scale); }
+            .text_max => { draw_text_max(fb, op.x, op.y, op.content, op.color, op.w); }
+        }
+        i = i + 1;
+    }
+    return true;
+}
